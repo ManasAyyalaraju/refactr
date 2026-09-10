@@ -5,7 +5,7 @@ Each domain has detailed guidance for emphasis, language patterns, metrics, and 
 
 DOMAIN_PROMPTS = {
     "Technology": {
-        "Software Engineering": {
+        "Software Engineering (SWE)": {
             "emphasis": [
                 "Backend logic, APIs, and scalable components",
                 "System architecture and design patterns",
@@ -37,7 +37,7 @@ DOMAIN_PROMPTS = {
             ]
         },
         
-        "Data Analyst": {
+        "Data Analyst / Business Intelligence": {
             "emphasis": [
                 "SQL querying and data extraction",
                 "Data cleaning, validation, and quality assurance",
@@ -237,7 +237,7 @@ DOMAIN_PROMPTS = {
     },
     
     "Healthcare": {
-        "Clinical": {
+        "Clinical (Nursing, Physician, etc.)": {
             "emphasis": [
                 "Patient care and outcomes",
                 "Clinical protocols and best practices",
