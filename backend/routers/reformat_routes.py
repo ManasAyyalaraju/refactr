@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -5,7 +6,8 @@ import tempfile
 from typing import Dict
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AuthenticationError
 
 from core.config import settings
@@ -13,6 +15,7 @@ from core.timing import timed_stage
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.pdf_writer import render_resume_pdf
 from services.reformat_engine import reformat_resume
+from services.skill_inference import infer_plausible_skills_for_resume
 from services.tailor_engine import ensure_technical_skills
 
 logger = logging.getLogger(__name__)
@@ -24,10 +27,21 @@ router = APIRouter(tags=["Reformatter"])
 async def reformat_resume_from_pdf(
     pdf: UploadFile = File(...),
     resume_format: str = Form("regular"),
+    output: str = Form("pdf"),
 ):
     """
     Upload a resume PDF and get a reformatted, ATS-friendly PDF back.
     No JD input and no bullet rewriting.
+
+    output="pdf" (default, unchanged): raw PDF bytes, as before.
+    output="json": {resume, inferred_skills, pdf_base64} in one body - used
+    by the save flow, which needs the structured data (to persist alongside
+    the resume, skipping a re-parse on every future tailor request) and the
+    actual PDF (for storage) from a single backend parse. The PDF is
+    base64-encoded in the JSON body rather than carried via a response
+    header - a dense resume's structured JSON could approach typical ~8KB
+    proxy header-size limits, unlike the small dict already sent via
+    X-Pipeline-Timings.
     """
     try:
         settings.validate_api_key()
@@ -79,6 +93,19 @@ async def reformat_resume_from_pdf(
 
         with timed_stage("render_pdf", timings):
             pdf_bytes = render_resume_pdf(reformatted, use_technical_skills=use_technical_skills)
+
+        if output.lower() == "json":
+            with timed_stage("infer_skills", timings):
+                inferred_skills = await infer_plausible_skills_for_resume(reformatted)
+
+            return JSONResponse(
+                content=jsonable_encoder({
+                    "resume": reformatted,
+                    "inferred_skills": inferred_skills,
+                    "pdf_base64": base64.b64encode(pdf_bytes).decode("ascii"),
+                }),
+                headers={"X-Pipeline-Timings": json.dumps(timings)},
+            )
 
         return StreamingResponse(
             iter([pdf_bytes]),
