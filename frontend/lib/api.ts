@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { TailoredResult } from '@/types/resume';
+import { Resume, TailoredResult } from '@/types/resume';
 
 // Configure the base URL for the backend API
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -35,10 +35,17 @@ export interface ReformatResumeParams {
   pdfFile: File | Blob;
   fileName?: string;
   resumeFormat?: ResumeFormat;
+  outputFormat?: 'pdf' | 'json';
+}
+
+export interface ReformatJsonResult {
+  resume: Resume;
+  inferred_skills: string[];
+  pdf_base64: string;
 }
 
 export interface ReformatResumeResponse {
-  data: Blob;
+  data: Blob | ReformatJsonResult;
   success: boolean;
   error?: string;
 }
@@ -85,14 +92,16 @@ export async function reformatResume({
   pdfFile,
   fileName,
   resumeFormat = 'regular',
+  outputFormat = 'pdf',
 }: ReformatResumeParams): Promise<ReformatResumeResponse> {
   try {
     const formData = new FormData();
     formData.append('pdf', pdfFile, resolveFileName(pdfFile, fileName));
     formData.append('resume_format', resumeFormat);
+    formData.append('output', outputFormat);
 
     const response = await apiClient.post('/api/reformat/pdf', formData, {
-      responseType: 'blob',
+      responseType: outputFormat === 'pdf' ? 'blob' : 'json',
     });
 
     return {
@@ -119,6 +128,19 @@ export async function fetchTemplatePreview(format: ResumeFormat): Promise<Blob> 
     headers: { 'Content-Type': undefined },
   });
   return response.data;
+}
+
+/**
+ * Decode a base64-encoded PDF (from ReformatJsonResult.pdf_base64) into a File.
+ */
+export function base64ToFile(base64: string, fileName: string): File {
+  const byteChars = atob(base64);
+  const byteNumbers = new Array(byteChars.length);
+  for (let i = 0; i < byteChars.length; i++) {
+    byteNumbers[i] = byteChars.charCodeAt(i);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  return new File([byteArray], fileName, { type: 'application/pdf' });
 }
 
 /**

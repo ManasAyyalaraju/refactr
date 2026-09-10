@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { CompatibilityReport } from '@/types/resume';
+import type { CompatibilityReport, Resume } from '@/types/resume';
 
 export interface BaseResumeRow {
   id: string;
@@ -10,6 +10,10 @@ export interface BaseResumeRow {
   is_default: boolean;
   created_at: string;
   updated_at: string;
+  // Parsed at save time so tailoring can skip re-parsing the PDF on every
+  // request; both null for resumes saved before this existed.
+  parsed_data: Resume | null;
+  inferred_skills: string[] | null;
 }
 
 export interface TailoringOptions {
@@ -42,7 +46,9 @@ function randomId(): string {
 export async function uploadBaseResume(
   supabase: SupabaseClient,
   userId: string,
-  file: File
+  file: File,
+  parsedData?: Resume | null,
+  inferredSkills?: string[] | null
 ): Promise<{ id: string; storage_path: string } | null> {
   try {
     const storagePath = `${userId}/${randomId()}-${file.name}`;
@@ -60,6 +66,8 @@ export async function uploadBaseResume(
         title: file.name,
         storage_path: storagePath,
         file_name: file.name,
+        parsed_data: parsedData ?? null,
+        inferred_skills: inferredSkills ?? null,
       })
       .select('id, storage_path')
       .single();

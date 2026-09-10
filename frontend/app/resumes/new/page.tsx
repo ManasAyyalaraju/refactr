@@ -10,7 +10,13 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { uploadBaseResume } from '@/lib/supabase/resumes';
-import { reformatResume, fetchTemplatePreview, ResumeFormat } from '@/lib/api';
+import {
+  reformatResume,
+  fetchTemplatePreview,
+  base64ToFile,
+  ReformatJsonResult,
+  ResumeFormat,
+} from '@/lib/api';
 
 export default function NewResumePage() {
   const router = useRouter();
@@ -46,20 +52,22 @@ export default function NewResumePage() {
     setIsSaving(true);
     setError('');
 
-    const pdfResponse = await reformatResume({
+    const reformatResponse = await reformatResume({
       pdfFile: selectedFile,
       fileName: selectedFile.name,
       resumeFormat,
+      outputFormat: 'json',
     });
 
-    if (!pdfResponse.success || !pdfResponse.data) {
-      setError(pdfResponse.error || 'Failed to reformat your resume. Please try again.');
+    if (!reformatResponse.success || !reformatResponse.data) {
+      setError(reformatResponse.error || 'Failed to reformat your resume. Please try again.');
       setIsSaving(false);
       return;
     }
 
-    const reformattedFile = new File([pdfResponse.data], selectedFile.name, { type: 'application/pdf' });
-    const result = await uploadBaseResume(supabase, user.id, reformattedFile);
+    const { resume, inferred_skills, pdf_base64 } = reformatResponse.data as ReformatJsonResult;
+    const reformattedFile = base64ToFile(pdf_base64, selectedFile.name);
+    const result = await uploadBaseResume(supabase, user.id, reformattedFile, resume, inferred_skills);
 
     if (!result) {
       setError('Failed to save your resume. Please try again.');
