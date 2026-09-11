@@ -460,6 +460,69 @@ Instructions:
         return []
 
 
+class _SkillAssignment(BaseModel):
+    skill: str
+    category_label: str
+
+
+class _SkillAssignments(BaseModel):
+    assignments: List[_SkillAssignment]
+
+
+async def assign_skills_to_existing_categories(
+    new_skills: list[str], existing_labels: list[str]
+) -> list[dict]:
+    """
+    Assign each of new_skills to one of existing_labels wherever it
+    reasonably fits, rather than categorize_skills()'s from-scratch
+    bucketing - used when a resume's TECHNICAL SKILLS is already
+    categorized and a few new skills (e.g. confirmed from the inferred-
+    skills picker) need to be added without disturbing the categories the
+    candidate already has. A from-scratch re-categorization would risk
+    renaming/reshuffling the existing labels the candidate is used to
+    seeing (e.g. "Computer Software" becoming "Data Tools"); this only ever
+    appends to them.
+
+    Returns [{"skill": ..., "category_label": ...}] - category_label is
+    ideally one of existing_labels verbatim; the model may propose a new
+    label only when a skill doesn't reasonably fit any of them.
+    """
+    if not client or not new_skills or not existing_labels:
+        return []
+
+    prompt = f"""
+A resume's TECHNICAL SKILLS section already has these category labels:
+{json.dumps(existing_labels)}
+
+These new skills need to be added into the section:
+{json.dumps(new_skills)}
+
+For each new skill, choose which of the EXISTING category labels above it fits into.
+STRONGLY prefer reusing an existing label, even for a loose or broad fit - most new skills
+belong in one of the categories already there. Only propose a brand-new category label for a
+skill that is genuinely different in kind from everything the existing categories cover (e.g.
+a hardware/IoT-specific skill on an otherwise all-software-and-data resume) - this should be
+rare, not the default choice.
+
+Rules:
+- Prefer an existing label from the list above whenever a skill reasonably fits there.
+- Only invent a new label as a last resort, when no existing category fits at all.
+- Every skill in the input list must get exactly one category_label.
+"""
+
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=_SkillAssignments,
+            temperature=0,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        return [a.model_dump() for a in parsed.assignments if a.skill and a.category_label]
+    except Exception:
+        return []
+
+
 def _enforce_skill_category_cap(categories: list[dict]) -> list[dict]:
     """
     Hard-enforce MAX_SKILL_CATEGORIES regardless of what the model returned:

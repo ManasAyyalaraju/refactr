@@ -4,7 +4,7 @@ from models.resume_models import Resume, TechnicalSkillCategory
 from models.job_models import JobDescription
 from core.exceptions import TailoringGenerationError
 from services.bullet_verifier import verify_bullets, find_unauthorized_terms
-from .llm_client import rewrite_resume_sections, categorize_skills, revise_bullet
+from .llm_client import rewrite_resume_sections, categorize_skills, assign_skills_to_existing_categories, revise_bullet
 import json
 import logging
 import re
@@ -156,12 +156,56 @@ async def ensure_technical_skills(resume: Resume) -> Resume:
     no visible effect since the template only renders a TECHNICAL SKILLS
     section when technical_skills is non-empty.
     """
-    if resume.technical_skills or not resume.skills:
+    if not resume.skills:
         return resume
 
-    categories = await categorize_skills(resume.skills)
-    if categories:
-        resume.technical_skills = [TechnicalSkillCategory(**c) for c in categories]
+    if not resume.technical_skills:
+        categories = await categorize_skills(resume.skills)
+        if categories:
+            resume.technical_skills = [TechnicalSkillCategory(**c) for c in categories]
+        return resume
+
+    # Categories already exist (parsed from the original resume), but
+    # resume.skills can have grown since (e.g. picker-confirmed skills merged
+    # in after that parse) - without this, anything added after the original
+    # categorization would show up in the flat skills list/compatibility
+    # score but never in the rendered TECHNICAL SKILLS section.
+    categorized_lower = {item.lower() for cat in resume.technical_skills for item in cat.items}
+    orphaned = [s for s in resume.skills if s.lower() not in categorized_lower]
+    if not orphaned:
+        return resume
+
+    # Fit the orphaned skills into the EXISTING categories rather than
+    # re-categorizing everything from scratch (which silently renamed/
+    # reshuffled labels the candidate already had, e.g. "Computer Software"
+    # becoming "Data Tools") or categorizing the orphaned skills in total
+    # isolation (which had no context to avoid awkward single-item
+    # categories like "Web Development: FastAPI"). Only creates a new
+    # category as a last resort, when a skill genuinely doesn't fit any
+    # existing one.
+    existing_labels = [c.label for c in resume.technical_skills]
+    assignments = await assign_skills_to_existing_categories(orphaned, existing_labels)
+
+    assigned_lower = set()
+    for a in assignments:
+        skill, label = a.get("skill"), (a.get("category_label") or "").strip()
+        if not skill or not label:
+            continue
+        existing = next(
+            (c for c in resume.technical_skills if c.label.strip().lower() == label.lower()), None
+        )
+        if existing:
+            if skill.lower() not in {i.lower() for i in existing.items}:
+                existing.items.append(skill)
+        else:
+            resume.technical_skills.append(TechnicalSkillCategory(label=label, items=[skill]))
+        assigned_lower.add(skill.lower())
+
+    # The model occasionally drops an input skill from its response -
+    # never let that silently lose it from the rendered section.
+    unassigned = [s for s in orphaned if s.lower() not in assigned_lower]
+    if unassigned and resume.technical_skills:
+        resume.technical_skills[0].items.extend(unassigned)
 
     return resume
 
