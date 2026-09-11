@@ -9,7 +9,7 @@ import JobDescriptionInput from '@/components/JobDescriptionInput';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorMessage from '@/components/ErrorMessage';
 import { Sparkles, Wand2, FileText, Code2 } from 'lucide-react';
-import { tailorResume, reformatResume, ResumeFormat } from '@/lib/api';
+import { tailorResume, reformatResume, parseJobDescription, ResumeFormat, SkillMatch } from '@/lib/api';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { listBaseResumes, downloadBaseResume, uploadGeneratedResume, BaseResumeRow } from '@/lib/supabase/resumes';
@@ -39,6 +39,10 @@ function TailorPageInner() {
   const [resumeFormat, setResumeFormat] = useState<ResumeFormat>('regular');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string>('');
+  const [isCheckingOverlap, setIsCheckingOverlap] = useState(false);
+  const [pickerSkills, setPickerSkills] = useState<string[] | null>(null);
+  const [selectedSkills, setSelectedSkills] = useState<Set<string>>(new Set());
+  const [pickerSkillMatches, setPickerSkillMatches] = useState<SkillMatch[]>([]);
 
   const [reformatLoading, setReformatLoading] = useState(false);
   const [reformatError, setReformatError] = useState<string>('');
@@ -67,6 +71,8 @@ function TailorPageInner() {
   const handleTabChange = (tab: FlowTab) => {
     setActiveTab(tab);
     setError('');
+    setPickerSkills(null);
+    setPickerSkillMatches([]);
     setReformatError('');
     setReformatSuccess('');
     if (reformatPdfUrl) {
@@ -75,7 +81,90 @@ function TailorPageInner() {
     }
   };
 
-  const handleSubmit = async () => {
+  const handleTailorClick = async () => {
+    if (!selectedResume || !jobDescription || !user) return;
+
+    // Only resumes with inferred_skills (saved after Phase 1, or reparsed)
+    // have anything to offer here - skip the check for older resumes.
+    if (!selectedResume.inferred_skills || selectedResume.inferred_skills.length === 0) {
+      await handleSubmit([]);
+      return;
+    }
+
+    setError('');
+    setIsCheckingOverlap(true);
+    const jdResponse = await parseJobDescription(jobDescription, selectedResume.inferred_skills);
+    setIsCheckingOverlap(false);
+
+    if (!jdResponse.success || !jdResponse.data?.job_description) {
+      // Non-critical enhancement - don't block tailoring if this check fails.
+      await handleSubmit([]);
+      return;
+    }
+
+    const jd = jdResponse.data.job_description;
+    const explicitLower = new Set((selectedResume.parsed_data?.skills ?? []).map((s) => s.toLowerCase()));
+
+    // Plain literal overlap (e.g. JD says "Docker", inferred_skills has "Docker").
+    const jdSkillsLower = new Set(
+      [...(jd.must_have_skills ?? []), ...(jd.nice_to_have_skills ?? [])].map((s) => s.toLowerCase())
+    );
+    const literalOverlap = selectedResume.inferred_skills.filter(
+      (s) => jdSkillsLower.has(s.toLowerCase()) && !explicitLower.has(s.toLowerCase())
+    );
+
+    // Semantic overlap (e.g. JD says "data modeling techniques", candidate has
+    // "hyperparameter tuning") - a JD requirement phrased more broadly than
+    // any single skill's own wording, which literal matching can't catch.
+    const semanticOverlap = (jdResponse.data.skill_matches ?? [])
+      .flatMap((m) => m.matched_candidate_skills)
+      .filter((s) => !explicitLower.has(s.toLowerCase()));
+
+    const overlap = Array.from(new Set([...literalOverlap, ...semanticOverlap]));
+
+    if (overlap.length === 0) {
+      await handleSubmit([]);
+      return;
+    }
+
+    setPickerSkills(overlap);
+    setSelectedSkills(new Set(overlap));
+    setPickerSkillMatches(jdResponse.data.skill_matches ?? []);
+  };
+
+  const toggleSkill = (skill: string) => {
+    setSelectedSkills((prev) => {
+      const next = new Set(prev);
+      if (next.has(skill)) {
+        next.delete(skill);
+      } else {
+        next.add(skill);
+      }
+      return next;
+    });
+  };
+
+  const handleConfirmSkills = async () => {
+    const chosen = pickerSkills ? pickerSkills.filter((s) => selectedSkills.has(s)) : [];
+    // Credit a JD requirement (e.g. "data modeling techniques") if at least
+    // one of the skills that satisfy it was actually confirmed - computed
+    // from the full-pool matches already found by the earlier overlap check,
+    // not re-derived against just the confirmed subset (a smaller pool
+    // makes the match-judgment markedly less reliable).
+    const chosenLower = new Set(chosen.map((s) => s.toLowerCase()));
+    const credited = pickerSkillMatches
+      .filter((m) => m.matched_candidate_skills.some((s) => chosenLower.has(s.toLowerCase())))
+      .map((m) => m.jd_skill);
+    setPickerSkills(null);
+    await handleSubmit(chosen, credited);
+  };
+
+  const handleSkipSkills = async () => {
+    setPickerSkills(null);
+    await handleSubmit([], []);
+  };
+
+  const handleSubmit = async (additionalSkills: string[], creditedSkills: string[] = []) => {
     if (!selectedResume || !jobDescription || !user) return;
 
     setIsLoading(true);
@@ -104,6 +193,8 @@ function TailorPageInner() {
         jobDescription,
         outputFormat: 'json',
         resumeFormat,
+        additionalSkills,
+        creditedSkills,
       });
 
       if (!jsonResponse.success || !jsonResponse.data) {
@@ -117,6 +208,8 @@ function TailorPageInner() {
         jobDescription,
         outputFormat: 'pdf',
         resumeFormat,
+        additionalSkills,
+        creditedSkills,
       });
 
       if (!pdfResponse.success || !pdfResponse.data) {
@@ -316,12 +409,59 @@ function TailorPageInner() {
                   submessage="This may take 1-3 minutes. Please wait."
                 />
               </div>
+            ) : isCheckingOverlap ? (
+              <div className="bg-white rounded-xl shadow-lg p-12">
+                <LoadingSpinner message="Checking for matching skills..." />
+              </div>
             ) : error ? (
               <div className="bg-white rounded-xl shadow-lg p-8">
                 <ErrorMessage
                   message={error}
                   onRetry={handleRetry}
                 />
+              </div>
+            ) : pickerSkills ? (
+              <div className="bg-white rounded-xl shadow-lg p-8 mb-8">
+                <div className="mb-6">
+                  <h2 className="text-2xl font-semibold text-gray-800 mb-2">
+                    Add matching skills?
+                  </h2>
+                  <p className="text-gray-600">
+                    Based on your resume&apos;s background, these look plausible and match what
+                    this job is looking for, but aren&apos;t explicitly listed on your resume.
+                    Confirm any that are actually true to include them in your tailored resume.
+                  </p>
+                </div>
+                <div className="space-y-3 mb-8">
+                  {pickerSkills.map((skill) => (
+                    <label
+                      key={skill}
+                      className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-gray-300 cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedSkills.has(skill)}
+                        onChange={() => toggleSkill(skill)}
+                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
+                      />
+                      <span className="text-gray-800">{skill}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex justify-center gap-4">
+                  <button
+                    onClick={handleSkipSkills}
+                    className="px-8 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
+                  >
+                    Skip
+                  </button>
+                  <button
+                    onClick={handleConfirmSkills}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all cursor-pointer"
+                  >
+                    Continue with {selectedSkills.size} selected
+                  </button>
+                </div>
               </div>
             ) : (
               <>
@@ -394,7 +534,7 @@ function TailorPageInner() {
                 {/* Submit Button */}
                 <div className="text-center">
                   <button
-                    onClick={handleSubmit}
+                    onClick={handleTailorClick}
                     disabled={!canSubmit}
                     className={`
                       inline-flex items-center justify-center gap-3

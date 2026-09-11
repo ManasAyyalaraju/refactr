@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { Resume, TailoredResult } from '@/types/resume';
+import { Resume, TailoredResult, JobDescription } from '@/types/resume';
 
 // Configure the base URL for the backend API
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
@@ -22,6 +22,14 @@ export interface TailorResumeParams {
   jobDescription: string;
   outputFormat?: 'json' | 'pdf';
   resumeFormat?: ResumeFormat;
+  // Skills the candidate explicitly confirmed (from the inferred-skills
+  // picker) - merged into the resume's truthful skill pool before tailoring.
+  additionalSkills?: string[];
+  // JD requirement phrases (verbatim) that parseJobDescription's
+  // skill_matches determined are satisfied by the confirmed additionalSkills
+  // - credits the compatibility score/matched-list without writing the
+  // broader wording onto the resume itself.
+  creditedSkills?: string[];
 }
 
 function resolveFileName(pdfFile: File | Blob, fileName?: string): string {
@@ -63,6 +71,8 @@ export async function tailorResume({
   jobDescription,
   outputFormat = 'json',
   resumeFormat = 'regular',
+  additionalSkills,
+  creditedSkills,
 }: TailorResumeParams): Promise<TailorResumeResponse> {
   try {
     const formData = new FormData();
@@ -76,6 +86,12 @@ export async function tailorResume({
     formData.append('jd_text', jobDescription);
     formData.append('output', outputFormat);
     formData.append('resume_format', resumeFormat);
+    if (additionalSkills && additionalSkills.length > 0) {
+      formData.append('additional_skills', JSON.stringify(additionalSkills));
+    }
+    if (creditedSkills && creditedSkills.length > 0) {
+      formData.append('credited_skills', JSON.stringify(creditedSkills));
+    }
 
     const response = await apiClient.post('/api/tailor/pdf', formData, {
       responseType: outputFormat === 'pdf' ? 'blob' : 'json',
@@ -158,6 +174,61 @@ export async function reparseResume(pdfFile: Blob, fileName: string): Promise<Re
     console.error('Error reparsing resume:', error);
     return {
       data: {} as ReparseResumeResult,
+      success: false,
+      error: error instanceof Error ? error.message : 'An error occurred',
+    };
+  }
+}
+
+export interface SkillMatch {
+  jd_skill: string;
+  matched_candidate_skills: string[];
+}
+
+export interface ParseJobDescriptionResult {
+  job_description: JobDescription;
+  domain: { industry: string; sub_domain: string; confidence: string };
+  skill_matches: SkillMatch[];
+}
+
+export interface ParseJobDescriptionResponse {
+  data: ParseJobDescriptionResult;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Parse a job description's skills/domain without tailoring a resume
+ * against it (Phase 4) - used to compute overlap with a resume's
+ * inferred_skills for the skill-suggestion picker.
+ *
+ * inferredSkills: a resume's inferred_skills - when given, the backend also
+ * returns skill_matches: concrete inferred skills that satisfy a JD
+ * requirement phrased more broadly than the skill's own wording (e.g.
+ * "hyperparameter tuning" satisfying "data modeling techniques"), on top of
+ * whatever plain literal-string overlap already finds.
+ */
+export async function parseJobDescription(
+  jdText: string,
+  inferredSkills?: string[]
+): Promise<ParseJobDescriptionResponse> {
+  try {
+    const formData = new FormData();
+    formData.append('jd_text', jdText);
+    if (inferredSkills && inferredSkills.length > 0) {
+      formData.append('inferred_skills', JSON.stringify(inferredSkills));
+    }
+
+    const response = await apiClient.post('/api/jd/parse', formData);
+
+    return {
+      data: response.data,
+      success: true,
+    };
+  } catch (error) {
+    console.error('Error parsing job description:', error);
+    return {
+      data: {} as ParseJobDescriptionResult,
       success: false,
       error: error instanceof Error ? error.message : 'An error occurred',
     };
