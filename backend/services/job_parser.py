@@ -155,6 +155,8 @@ TECHNOLOGY SUB-DOMAINS:
 - Full-Stack Development
 - Mobile Development
 - QA / Testing
+- UX/UI / Product Design
+- Forward Deployed Engineering
 
 FINANCE SUB-DOMAINS:
 - Commercial Banking

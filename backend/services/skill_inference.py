@@ -113,6 +113,8 @@ TECHNOLOGY SUB-DOMAINS:
 - Full-Stack Development
 - Mobile Development
 - QA / Testing
+- UX/UI / Product Design
+- Forward Deployed Engineering
 
 FINANCE SUB-DOMAINS:
 - Commercial Banking
@@ -186,17 +188,25 @@ PERSON'S BACKGROUND:
 
 async def suggest_plausible_skills(resume: Resume, domain_info: dict) -> List[str]:
     """
-    Suggest concrete, plausible-but-unlisted skills for this resume, grounded
-    in both the resume's own actual content and the matched domain's curated
-    guidance - never free-associated. Fails safe to an empty list on any
-    domain-coverage miss (domain_prompts.py doesn't cover every sub-domain)
-    or missing client, rather than guessing.
+    Suggest concrete, plausible-but-unlisted skills for this resume.
+
+    Two passes, both grounded in the resume's own content (never free-
+    associated):
+    1. Grounded pass - additionally uses the matched domain's curated
+       skill_priorities as context, when domain_prompts.py has an entry for
+       it (it doesn't cover every sub-domain yet).
+    2. Fallback pass - runs only if the grounded pass came back empty
+       (either no domain entry, or the resume was too thin for it to
+       confidently suggest anything). Reasons directly from the resume's own
+       background with no domain guidance, so a resume with real content
+       never ends up with a flatly empty inferred_skills list just because
+       its specific sub-domain isn't curated yet.
+
+    Still fails safe to an empty list for a resume with no real background
+    content, or on a missing client - there's nothing to ground a fallback
+    in for those.
     """
     if not client:
-        return []
-
-    entry = get_domain_prompt(domain_info.get("industry", ""), domain_info.get("sub_domain", ""))
-    if not entry:
         return []
 
     background = _resume_background_text(resume)
@@ -204,6 +214,17 @@ async def suggest_plausible_skills(resume: Resume, domain_info: dict) -> List[st
         return []
 
     existing = _existing_skill_set(resume)
+
+    entry = get_domain_prompt(domain_info.get("industry", ""), domain_info.get("sub_domain", ""))
+    if entry:
+        grounded = await _suggest_grounded_skills(background, existing, domain_info, entry)
+        if grounded:
+            return grounded
+
+    return await _suggest_fallback_skills(background, existing)
+
+
+async def _suggest_grounded_skills(background: str, existing: set, domain_info: dict, entry: dict) -> List[str]:
     guidance = format_domain_guidance(entry)
 
     prompt = f"""
@@ -239,6 +260,55 @@ Rules:
   general field.
 - If you can't confidently suggest 15 things grounded in their actual background, return
   fewer rather than padding the list with weaker guesses.
+"""
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=_SuggestedSkills,
+            temperature=0.2,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        return [s.strip() for s in parsed.skills if s.strip() and s.strip().lower() not in existing]
+    except Exception:
+        return []
+
+
+async def _suggest_fallback_skills(background: str, existing: set) -> List[str]:
+    """
+    Last-resort pass, used only when the grounded pass came back empty.
+    Drops the domain_prompts.py guidance entirely and reasons directly from
+    the candidate's own background - still grounded in what they actually
+    wrote, just without curated domain context to lean on. This is what
+    keeps inferred_skills from being flatly empty for a resume whose
+    sub-domain isn't covered in domain_prompts.py yet.
+    """
+    if not client:
+        return []
+
+    prompt = f"""
+You are helping identify skills a candidate plausibly has but didn't list on their resume.
+No curated guidance is available for their exact specialization, so reason directly from
+their own background below using your general knowledge of their field.
+
+CANDIDATE'S ACTUAL BACKGROUND:
+\"\"\"{background}\"\"\"
+
+CANDIDATE'S ALREADY-LISTED SKILLS (do not repeat any of these):
+{sorted(existing)}
+
+Suggest 3-8 concrete, specific tools/technologies/methodologies/certifications this
+candidate plausibly knows given their actual background, but did NOT list explicitly.
+Each suggestion should be traceable to something specific in their background - a tool
+that naturally accompanies something they already listed, or a baseline skill someone at
+their demonstrated level has almost certainly picked up.
+
+Rules:
+- Never suggest something contradicted by or unrelated to their actual experience.
+- Each suggestion must be a concrete, nameable thing (e.g. "Excel", "Docker") - never a
+  vague category (e.g. "Programming languages", "Certifications").
+- If you genuinely cannot ground even 3 suggestions in their background, return fewer -
+  do not pad with generic guesses just to reach the minimum.
 """
     try:
         response = await client.chat.completions.parse(
