@@ -10,8 +10,10 @@ interface DownloadFileMessage {
 
 interface TailorResumeMessage {
   type: 'TAILOR_RESUME';
-  pdfDataUrl: string;
-  fileName: string;
+  // Provide exactly one of pdfDataUrl / resumeJson.
+  pdfDataUrl?: string;
+  resumeJson?: Record<string, unknown>;
+  fileName?: string;
   jobDescription: string;
   resumeFormat: 'regular' | 'technical';
 }
@@ -36,11 +38,17 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
     // webpage's CSP, so route the actual API call through here instead.
     (async () => {
       try {
-        const pdfBlob = await fetch(message.pdfDataUrl).then((r) => r.blob());
+        const pdfBlob = message.pdfDataUrl
+          ? await fetch(message.pdfDataUrl).then((r) => r.blob())
+          : null;
 
         const buildFormData = (output: 'json' | 'pdf') => {
           const formData = new FormData();
-          formData.append('pdf', pdfBlob, message.fileName);
+          if (message.resumeJson) {
+            formData.append('resume_json', JSON.stringify(message.resumeJson));
+          } else if (pdfBlob) {
+            formData.append('pdf', pdfBlob, message.fileName);
+          }
           formData.append('jd_text', message.jobDescription);
           formData.append('output', output);
           formData.append('resume_format', message.resumeFormat);

@@ -7,6 +7,11 @@ export interface BaseResumeRow {
   storage_path: string;
   file_name: string | null;
   created_at: string;
+  // Opaque parsed Resume JSON, set by the web app's reformatter at save
+  // time - the extension never inspects its shape, only passes it through
+  // to the backend to skip a redundant PDF parse. Null for resumes saved
+  // before this existed.
+  parsed_data: Record<string, unknown> | null;
 }
 
 function randomId(): string {
@@ -19,7 +24,7 @@ export async function listBaseResumes(
 ): Promise<BaseResumeRow[]> {
   const { data, error } = await supabase
     .from('base_resumes')
-    .select('id, title, storage_path, file_name, created_at')
+    .select('id, title, storage_path, file_name, created_at, parsed_data')
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
 

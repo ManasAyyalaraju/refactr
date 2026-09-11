@@ -1,8 +1,10 @@
 import { blobToDataUrl } from './data-url';
 
 export interface TailorRequest {
-  pdfBlob: Blob;
-  fileName: string;
+  // Provide exactly one of pdfBlob / resumeJson.
+  pdfBlob?: Blob;
+  resumeJson?: Record<string, unknown>;
+  fileName?: string;
   jobDescription: string;
   resumeFormat: 'regular' | 'technical';
 }
@@ -26,6 +28,7 @@ export interface TailorResult {
 
 export async function tailorResumePdf({
   pdfBlob,
+  resumeJson,
   fileName,
   jobDescription,
   resumeFormat,
@@ -33,11 +36,12 @@ export async function tailorResumePdf({
   // Routed through the background service worker - a direct fetch() here
   // would run in the host page's execution context and get silently blocked
   // by that page's CSP connect-src (see background.ts for details).
-  const pdfDataUrl = await blobToDataUrl(pdfBlob);
+  const pdfDataUrl = pdfBlob ? await blobToDataUrl(pdfBlob) : undefined;
 
   const response = await chrome.runtime.sendMessage({
     type: 'TAILOR_RESUME',
     pdfDataUrl,
+    resumeJson,
     fileName,
     jobDescription,
     resumeFormat,

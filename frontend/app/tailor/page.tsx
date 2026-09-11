@@ -13,7 +13,7 @@ import { tailorResume, reformatResume, ResumeFormat } from '@/lib/api';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { listBaseResumes, downloadBaseResume, uploadGeneratedResume, BaseResumeRow } from '@/lib/supabase/resumes';
-import type { TailoredResult } from '@/types/resume';
+import type { Resume, TailoredResult } from '@/types/resume';
 
 type FlowTab = 'tailor' | 'reformat';
 
@@ -82,17 +82,25 @@ function TailorPageInner() {
     setError('');
 
     try {
-      const pdfBlob = await downloadBaseResume(supabase, selectedResume.storage_path);
-      if (!pdfBlob) {
-        setError('Could not load the selected resume. Please try again.');
-        return;
-      }
       const fileName = selectedResume.file_name ?? selectedResume.title;
+
+      // Resumes saved after Phase 1 already carry their parsed structure -
+      // skip re-downloading and re-parsing the PDF entirely for those.
+      let sourceParams: { pdfFile: Blob; fileName: string } | { resumeJson: Resume };
+      if (selectedResume.parsed_data) {
+        sourceParams = { resumeJson: selectedResume.parsed_data };
+      } else {
+        const pdfBlob = await downloadBaseResume(supabase, selectedResume.storage_path);
+        if (!pdfBlob) {
+          setError('Could not load the selected resume. Please try again.');
+          return;
+        }
+        sourceParams = { pdfFile: pdfBlob, fileName };
+      }
 
       // Request JSON first to get structured data
       const jsonResponse = await tailorResume({
-        pdfFile: pdfBlob,
-        fileName,
+        ...sourceParams,
         jobDescription,
         outputFormat: 'json',
         resumeFormat,
@@ -105,8 +113,7 @@ function TailorPageInner() {
 
       // Request PDF version
       const pdfResponse = await tailorResume({
-        pdfFile: pdfBlob,
-        fileName,
+        ...sourceParams,
         jobDescription,
         outputFormat: 'pdf',
         resumeFormat,

@@ -277,12 +277,19 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     render();
 
     try {
-      const pdfBlob = await downloadBaseResume(supabase, resume.storage_path);
-      if (!pdfBlob) throw new Error('Could not load that saved resume file.');
+      // Resumes saved after Phase 1 already carry their parsed structure -
+      // skip re-downloading and re-parsing the PDF entirely for those.
+      let sourceParams: { pdfBlob: Blob; fileName: string } | { resumeJson: Record<string, unknown> };
+      if (resume.parsed_data) {
+        sourceParams = { resumeJson: resume.parsed_data };
+      } else {
+        const pdfBlob = await downloadBaseResume(supabase, resume.storage_path);
+        if (!pdfBlob) throw new Error('Could not load that saved resume file.');
+        sourceParams = { pdfBlob, fileName: resume.file_name ?? resume.title };
+      }
 
       const tailorResult = await tailorResumePdf({
-        pdfBlob,
-        fileName: resume.file_name ?? resume.title,
+        ...sourceParams,
         jobDescription: jobContext.description,
         resumeFormat: state.resumeFormat,
       });

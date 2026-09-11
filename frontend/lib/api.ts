@@ -14,7 +14,10 @@ const apiClient = axios.create({
 export type ResumeFormat = 'regular' | 'technical';
 
 export interface TailorResumeParams {
-  pdfFile: File | Blob;
+  // Provide exactly one of pdfFile / resumeJson. resumeJson (a previously-
+  // parsed Resume from a saved base_resume) skips the backend's PDF parse.
+  pdfFile?: File | Blob;
+  resumeJson?: Resume;
   fileName?: string;
   jobDescription: string;
   outputFormat?: 'json' | 'pdf';
@@ -55,6 +58,7 @@ export interface ReformatResumeResponse {
  */
 export async function tailorResume({
   pdfFile,
+  resumeJson,
   fileName,
   jobDescription,
   outputFormat = 'json',
@@ -62,7 +66,13 @@ export async function tailorResume({
 }: TailorResumeParams): Promise<TailorResumeResponse> {
   try {
     const formData = new FormData();
-    formData.append('pdf', pdfFile, resolveFileName(pdfFile, fileName));
+    if (resumeJson) {
+      formData.append('resume_json', JSON.stringify(resumeJson));
+    } else if (pdfFile) {
+      formData.append('pdf', pdfFile, resolveFileName(pdfFile, fileName));
+    } else {
+      throw new Error('tailorResume requires either pdfFile or resumeJson.');
+    }
     formData.append('jd_text', jobDescription);
     formData.append('output', outputFormat);
     formData.append('resume_format', resumeFormat);
