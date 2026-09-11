@@ -128,7 +128,10 @@ function TailorPageInner() {
     }
 
     setPickerSkills(overlap);
-    setSelectedSkills(new Set(overlap));
+    // Unchecked by default - require an active, deliberate confirmation per
+    // skill rather than pre-selecting everything and asking the user to opt
+    // out (which is what led to over-inclusion/clutter in testing).
+    setSelectedSkills(new Set());
     setPickerSkillMatches(jdResponse.data.skill_matches ?? []);
   };
 
@@ -157,11 +160,6 @@ function TailorPageInner() {
       .map((m) => m.jd_skill);
     setPickerSkills(null);
     await handleSubmit(chosen, credited);
-  };
-
-  const handleSkipSkills = async () => {
-    setPickerSkills(null);
-    await handleSubmit([], []);
   };
 
   const handleSubmit = async (additionalSkills: string[], creditedSkills: string[] = []) => {
@@ -423,45 +421,38 @@ function TailorPageInner() {
             ) : pickerSkills ? (
               <div className="bg-white rounded-xl shadow-lg p-8 mb-8">
                 <div className="mb-6">
-                  <h2 className="text-2xl font-semibold text-gray-800 mb-2">
-                    Add matching skills?
+                  <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                    Skills To Add:
                   </h2>
-                  <p className="text-gray-600">
-                    Based on your resume&apos;s background, these look plausible and match what
-                    this job is looking for, but aren&apos;t explicitly listed on your resume.
-                    Confirm any that are actually true to include them in your tailored resume.
+                  <p className="text-xs text-gray-600">
+                    Based on your background these are plausible skills that match the job. These
+                    aren&apos;t explicitly listed on your resume. Choose those that are actually
+                    true to your background.
                   </p>
                 </div>
-                <div className="space-y-3 mb-8">
-                  {pickerSkills.map((skill) => (
-                    <label
-                      key={skill}
-                      className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-gray-300 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedSkills.has(skill)}
-                        onChange={() => toggleSkill(skill)}
-                        className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
-                      />
-                      <span className="text-gray-800">{skill}</span>
-                    </label>
-                  ))}
+                <div className="grid grid-cols-3 gap-3 mb-8">
+                  {pickerSkills.map((skill) => {
+                    const selected = selectedSkills.has(skill);
+                    return (
+                      <button
+                        key={skill}
+                        type="button"
+                        onClick={() => toggleSkill(skill)}
+                        className={`h-[50px] px-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
+                          selected ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-900 hover:bg-gray-200'
+                        }`}
+                      >
+                        {skill}
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="flex justify-center gap-4">
-                  <button
-                    onClick={handleSkipSkills}
-                    className="px-8 py-3 rounded-xl font-semibold text-gray-600 hover:bg-gray-100 transition-colors cursor-pointer"
-                  >
-                    Skip
-                  </button>
-                  <button
-                    onClick={handleConfirmSkills}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all cursor-pointer"
-                  >
-                    Continue with {selectedSkills.size} selected
-                  </button>
-                </div>
+                <button
+                  onClick={handleConfirmSkills}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-[14px] font-semibold text-lg shadow-[0px_4px_2px_rgba(0,0,0,0.25)] transition-colors cursor-pointer"
+                >
+                  Continue
+                </button>
               </div>
             ) : (
               <>
