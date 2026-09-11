@@ -5,6 +5,7 @@ import { cpSync, mkdirSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const watch = process.argv.includes('--watch');
+const prod = process.argv.includes('--prod');
 
 const entryPoints = {
   background: 'src/background.ts',
@@ -23,6 +24,12 @@ const buildOptions = {
   target: 'chrome116',
   sourcemap: true,
   logLevel: 'info',
+  // config.ts's API_BASE_URL defaults to localhost for `npm run build`/`watch`
+  // (local dev, loaded unpacked from dist/); `npm run build:prod` overrides it
+  // to the deployed backend for the build that gets pushed to extension-release.
+  define: {
+    'process.env.API_BASE_URL': JSON.stringify(prod ? 'https://api.refactrapp.com' : ''),
+  },
 };
 
 mkdirSync(join(__dirname, 'dist'), { recursive: true });

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
+    "build:prod": "node esbuild.config.mjs --prod",
     "watch": "node esbuild.config.mjs --watch"
   },
   "dependencies": {
