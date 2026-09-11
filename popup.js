@@ -20243,7 +20243,7 @@ ${suffix}`;
     return crypto.randomUUID();
   }
   async function listBaseResumes(supabase, userId) {
-    const { data, error } = await supabase.from("base_resumes").select("id, title, storage_path, file_name, created_at").eq("user_id", userId).order("created_at", { ascending: false });
+    const { data, error } = await supabase.from("base_resumes").select("id, title, storage_path, file_name, created_at, parsed_data, inferred_skills").eq("user_id", userId).order("created_at", { ascending: false });
     if (error) {
       console.error("listBaseResumes failed:", error);
       return [];
@@ -20301,17 +20301,23 @@ ${suffix}`;
   // src/lib/api.ts
   async function tailorResumePdf({
     pdfBlob,
+    resumeJson,
     fileName,
     jobDescription,
-    resumeFormat
+    resumeFormat,
+    additionalSkills,
+    creditedSkills
   }) {
-    const pdfDataUrl = await blobToDataUrl(pdfBlob);
+    const pdfDataUrl = pdfBlob ? await blobToDataUrl(pdfBlob) : void 0;
     const response = await chrome.runtime.sendMessage({
       type: "TAILOR_RESUME",
       pdfDataUrl,
+      resumeJson,
       fileName,
       jobDescription,
-      resumeFormat
+      resumeFormat,
+      additionalSkills,
+      creditedSkills
     });
     if (!response?.ok) {
       throw new Error(response?.error || "Tailoring failed.");
@@ -20322,6 +20328,17 @@ ${suffix}`;
       compatibility: response.compatibility,
       resumeSkills: response.resumeSkills
     };
+  }
+  async function parseJobDescription(jobDescription, inferredSkills) {
+    const response = await chrome.runtime.sendMessage({
+      type: "PARSE_JD",
+      jobDescription,
+      inferredSkills
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error || "Failed to parse job description.");
+    }
+    return { jobDescription: response.jobDescription, skillMatches: response.skillMatches ?? [] };
   }
 
   // src/panel-app.ts
@@ -20338,7 +20355,10 @@ ${suffix}`;
       resumeFormat: "regular",
       errorMessage: "",
       lastScore: null,
-      lastResultId: null
+      lastResultId: null,
+      pickerSkills: [],
+      selectedSkills: /* @__PURE__ */ new Set(),
+      pickerSkillMatches: []
     };
     function render() {
       container.innerHTML = `
@@ -20374,6 +20394,10 @@ ${suffix}`;
         `;
         case "picker":
           return renderPicker();
+        case "checking-skills":
+          return `<div class="refactr-status"><div class="refactr-spinner"></div><p>Checking for matching skills...</p></div>`;
+        case "skill-picker":
+          return renderSkillPicker();
         case "tailoring":
           return `<div class="refactr-status"><div class="refactr-spinner"></div><p>Tailoring your resume...</p></div>`;
         case "done":
@@ -20444,6 +20468,26 @@ ${suffix}`;
       ${renderAccountFooter()}
     `;
     }
+    function renderSkillPicker() {
+      const items = state.pickerSkills.map(
+        (skill) => `
+          <button
+            type="button"
+            class="refactr-skill-pill ${state.selectedSkills.has(skill) ? "selected" : ""}"
+            data-skill="${escapeHtml(skill)}"
+          >${escapeHtml(skill)}</button>
+        `
+      ).join("");
+      return `
+      <p class="refactr-skill-picker-title">Skills To Add:</p>
+      <p class="refactr-skill-picker-subtitle">
+        Based on your background these are plausible skills that match the job. These aren't
+        explicitly listed on your resume. Choose those that are actually true to your background.
+      </p>
+      <div class="refactr-skill-grid">${items}</div>
+      <button type="button" class="refactr-btn refactr-btn-full" data-action="confirm-skills">Continue</button>
+    `;
+    }
     function renderAccountFooter() {
       return `
       <p class="refactr-footer-link" style="margin-top:14px;font-size:12px;color:#6b7280;">
@@ -20467,6 +20511,9 @@ ${suffix}`;
       container.querySelector('[data-action="reset"]')?.addEventListener("click", () => {
         state.lastScore = null;
         state.lastResultId = null;
+        state.pickerSkills = [];
+        state.selectedSkills = /* @__PURE__ */ new Set();
+        state.pickerSkillMatches = [];
         state.screen = "picker";
         render();
       });
@@ -20485,6 +20532,24 @@ ${suffix}`;
         state.selectedResumeId = e.target.value;
       });
       container.querySelector('[data-action="sign-out"]')?.addEventListener("click", handleSignOut);
+      container.querySelectorAll("[data-skill]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const skill = el.dataset.skill;
+          if (!skill) return;
+          if (state.selectedSkills.has(skill)) {
+            state.selectedSkills.delete(skill);
+          } else {
+            state.selectedSkills.add(skill);
+          }
+          render();
+        });
+      });
+      container.querySelector('[data-action="confirm-skills"]')?.addEventListener("click", () => {
+        const chosen = state.pickerSkills.filter((s) => state.selectedSkills.has(s));
+        const chosenLower = new Set(chosen.map((s) => s.toLowerCase()));
+        const credited = state.pickerSkillMatches.filter((m) => m.matched_candidate_skills.some((s) => chosenLower.has(s.toLowerCase()))).map((m) => m.jd_skill);
+        runTailor(chosen, credited);
+      });
     }
     async function handleSignOut() {
       await supabase.auth.signOut();
@@ -20538,16 +20603,62 @@ ${suffix}`;
       if (!state.user || !jobContext || !state.selectedResumeId) return;
       const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
       if (!resume) return;
+      if (!resume.inferred_skills || resume.inferred_skills.length === 0) {
+        await runTailor([]);
+        return;
+      }
+      state.screen = "checking-skills";
+      render();
+      try {
+        const { jobDescription: jd, skillMatches } = await parseJobDescription(
+          jobContext.description,
+          resume.inferred_skills
+        );
+        const explicitLower = new Set(
+          (resume.parsed_data?.skills ?? []).map((s) => s.toLowerCase())
+        );
+        const jdSkillsLower = new Set(
+          [...jd.must_have_skills ?? [], ...jd.nice_to_have_skills ?? []].map((s) => s.toLowerCase())
+        );
+        const literalOverlap = resume.inferred_skills.filter(
+          (s) => jdSkillsLower.has(s.toLowerCase()) && !explicitLower.has(s.toLowerCase())
+        );
+        const semanticOverlap = skillMatches.flatMap((m) => m.matched_candidate_skills).filter((s) => !explicitLower.has(s.toLowerCase()));
+        const overlap = Array.from(/* @__PURE__ */ new Set([...literalOverlap, ...semanticOverlap]));
+        if (overlap.length === 0) {
+          await runTailor([]);
+          return;
+        }
+        state.pickerSkills = overlap;
+        state.selectedSkills = /* @__PURE__ */ new Set();
+        state.pickerSkillMatches = skillMatches;
+        state.screen = "skill-picker";
+        render();
+      } catch {
+        await runTailor([]);
+      }
+    }
+    async function runTailor(additionalSkills, creditedSkills = []) {
+      if (!state.user || !jobContext || !state.selectedResumeId) return;
+      const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
+      if (!resume) return;
       state.screen = "tailoring";
       render();
       try {
-        const pdfBlob = await downloadBaseResume(supabase, resume.storage_path);
-        if (!pdfBlob) throw new Error("Could not load that saved resume file.");
+        let sourceParams;
+        if (resume.parsed_data) {
+          sourceParams = { resumeJson: resume.parsed_data };
+        } else {
+          const pdfBlob = await downloadBaseResume(supabase, resume.storage_path);
+          if (!pdfBlob) throw new Error("Could not load that saved resume file.");
+          sourceParams = { pdfBlob, fileName: resume.file_name ?? resume.title };
+        }
         const tailorResult = await tailorResumePdf({
-          pdfBlob,
-          fileName: resume.file_name ?? resume.title,
+          ...sourceParams,
           jobDescription: jobContext.description,
-          resumeFormat: state.resumeFormat
+          resumeFormat: state.resumeFormat,
+          additionalSkills,
+          creditedSkills
         });
         await downloadBlob(tailorResult.pdfBlob, "tailored_resume.pdf");
         const saved = await uploadGeneratedResume(supabase, state.user.id, {

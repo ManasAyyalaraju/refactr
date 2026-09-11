@@ -276,3 +276,56 @@
   font-size: 14px;
   color: #374151;
 }
+
+.refactr-skill-picker-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #000000;
+  margin: 0 0 6px;
+}
+
+.refactr-skill-picker-subtitle {
+  font-size: 12px;
+  color: #000000;
+  margin: 0 0 16px;
+}
+
+.refactr-skill-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.refactr-skill-pill {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #030712;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+
+.refactr-skill-pill:hover {
+  background: #e5e7eb;
+}
+
+.refactr-skill-pill.selected {
+  background: #187fe7;
+  color: #ffffff;
+}
+
+.refactr-skill-pill.selected:hover {
+  background: #146bc7;
+}
+
+.refactr-btn-full {
+  width: 100%;
+}

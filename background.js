@@ -20260,13 +20260,23 @@ ${suffix}`;
     if (message.type === "TAILOR_RESUME") {
       (async () => {
         try {
-          const pdfBlob = await fetch(message.pdfDataUrl).then((r) => r.blob());
+          const pdfBlob = message.pdfDataUrl ? await fetch(message.pdfDataUrl).then((r) => r.blob()) : null;
           const buildFormData = (output) => {
             const formData = new FormData();
-            formData.append("pdf", pdfBlob, message.fileName);
+            if (message.resumeJson) {
+              formData.append("resume_json", JSON.stringify(message.resumeJson));
+            } else if (pdfBlob) {
+              formData.append("pdf", pdfBlob, message.fileName);
+            }
             formData.append("jd_text", message.jobDescription);
             formData.append("output", output);
             formData.append("resume_format", message.resumeFormat);
+            if (message.additionalSkills && message.additionalSkills.length > 0) {
+              formData.append("additional_skills", JSON.stringify(message.additionalSkills));
+            }
+            if (message.creditedSkills && message.creditedSkills.length > 0) {
+              formData.append("credited_skills", JSON.stringify(message.creditedSkills));
+            }
             return formData;
           };
           const jsonResponse = await fetch(`${API_BASE_URL}/api/tailor/pdf`, {
@@ -20297,6 +20307,31 @@ ${suffix}`;
           });
         } catch (err) {
           sendResponse({ ok: false, error: err instanceof Error ? err.message : "Tailoring failed." });
+        }
+      })();
+      return true;
+    }
+    if (message.type === "PARSE_JD") {
+      (async () => {
+        try {
+          const formData = new FormData();
+          formData.append("jd_text", message.jobDescription);
+          if (message.inferredSkills && message.inferredSkills.length > 0) {
+            formData.append("inferred_skills", JSON.stringify(message.inferredSkills));
+          }
+          const response = await fetch(`${API_BASE_URL}/api/jd/parse`, {
+            method: "POST",
+            body: formData
+          });
+          if (!response.ok) {
+            const text = await response.text().catch(() => "");
+            sendResponse({ ok: false, error: `Parsing job description failed (${response.status}): ${text.slice(0, 300)}` });
+            return;
+          }
+          const result = await response.json();
+          sendResponse({ ok: true, jobDescription: result.job_description, skillMatches: result.skill_matches });
+        } catch (err) {
+          sendResponse({ ok: false, error: err instanceof Error ? err.message : "Failed to parse job description." });
         }
       })();
       return true;
