@@ -128,6 +128,42 @@ export async function reformatResume({
   }
 }
 
+export interface ReparseResumeResult {
+  resume: Resume;
+  inferred_skills: string[];
+}
+
+export interface ReparseResumeResponse {
+  data: ReparseResumeResult;
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Tester-only (Phase 3): re-parse an already-saved resume PDF to backfill
+ * parsed_data/inferred_skills. Does not re-render or replace the PDF.
+ */
+export async function reparseResume(pdfFile: Blob, fileName: string): Promise<ReparseResumeResponse> {
+  try {
+    const formData = new FormData();
+    formData.append('pdf', pdfFile, fileName);
+
+    const response = await apiClient.post('/api/resumes/reparse', formData);
+
+    return {
+      data: response.data,
+      success: true,
+    };
+  } catch (error) {
+    console.error('Error reparsing resume:', error);
+    return {
+      data: {} as ReparseResumeResult,
+      success: false,
+      error: error instanceof Error ? error.message : 'An error occurred',
+    };
+  }
+}
+
 /**
  * Fetch a sample PDF showing what the Regular or Technical template looks like.
  */

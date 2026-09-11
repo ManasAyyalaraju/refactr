@@ -7,7 +7,15 @@ import Footer from '@/components/Footer';
 import Avatar, { AVATAR_COUNT } from '@/components/Avatar';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { createClient } from '@/lib/supabase/client';
+import { listBaseResumes, downloadBaseResume } from '@/lib/supabase/resumes';
+import { reparseResume } from '@/lib/api';
 import { Pencil, Check, X, Shuffle, LogOut } from 'lucide-react';
+
+interface ReparseLogEntry {
+  title: string;
+  ok: boolean;
+  message?: string;
+}
 
 function randomSeed(exclude?: number): number {
   let next = Math.floor(Math.random() * AVATAR_COUNT);
@@ -94,6 +102,61 @@ export default function ProfilePage() {
     await signOut();
     router.push('/');
     router.refresh();
+  };
+
+  const [isReparsing, setIsReparsing] = useState(false);
+  const [reparseStatus, setReparseStatus] = useState('');
+  const [reparseLog, setReparseLog] = useState<ReparseLogEntry[]>([]);
+
+  const handleReparseAll = async () => {
+    if (!user) return;
+
+    setIsReparsing(true);
+    setReparseStatus('Loading your resumes...');
+    setReparseLog([]);
+
+    const resumes = await listBaseResumes(supabase, user.id);
+    if (resumes.length === 0) {
+      setReparseStatus('No saved resumes to reparse.');
+      setIsReparsing(false);
+      return;
+    }
+
+    const log: ReparseLogEntry[] = [];
+    for (let i = 0; i < resumes.length; i++) {
+      const resume = resumes[i];
+      setReparseStatus(`Reparsing ${i + 1} of ${resumes.length}: ${resume.title}`);
+
+      try {
+        const pdfBlob = await downloadBaseResume(supabase, resume.storage_path);
+        if (!pdfBlob) throw new Error('Could not download the saved PDF.');
+
+        const result = await reparseResume(pdfBlob, resume.file_name ?? resume.title);
+        if (!result.success) throw new Error(result.error || 'Reparse failed.');
+
+        const { error: updateError } = await supabase
+          .from('base_resumes')
+          .update({
+            parsed_data: result.data.resume,
+            inferred_skills: result.data.inferred_skills,
+          })
+          .eq('id', resume.id);
+        if (updateError) throw updateError;
+
+        log.push({ title: resume.title, ok: true });
+      } catch (err) {
+        log.push({
+          title: resume.title,
+          ok: false,
+          message: err instanceof Error ? err.message : 'Unknown error',
+        });
+      }
+      setReparseLog([...log]);
+    }
+
+    const succeeded = log.filter((r) => r.ok).length;
+    setReparseStatus(`Done — ${succeeded}/${resumes.length} reparsed successfully.`);
+    setIsReparsing(false);
   };
 
   return (
@@ -213,6 +276,42 @@ export default function ProfilePage() {
                 Delete Account
               </button>
             </div>
+          </div>
+
+          <div className="bg-[#fffcfc] border border-black rounded-[4px] p-6 sm:p-8 mt-6">
+            <p className="font-bold text-[16px] tracking-[-0.32px] text-black mb-1">
+              Developer / Testing Tools
+            </p>
+            <p className="text-[13px] tracking-[-0.26px] text-black/70 mb-4">
+              Not a real product feature. Re-parses every saved resume to backfill inferred skills
+              for resumes saved before that existed — the saved PDF files are left untouched.
+            </p>
+            <button
+              type="button"
+              onClick={handleReparseAll}
+              disabled={isReparsing}
+              className="bg-black text-white rounded-[14px] px-5 py-2.5 text-[14px] hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isReparsing ? 'Reparsing...' : 'Reparse All Resumes'}
+            </button>
+
+            {reparseStatus && (
+              <p className="text-[13px] tracking-[-0.26px] text-black mt-3">{reparseStatus}</p>
+            )}
+
+            {reparseLog.length > 0 && (
+              <ul className="mt-3 space-y-1">
+                {reparseLog.map((entry, i) => (
+                  <li
+                    key={`${entry.title}-${i}`}
+                    className={`text-[13px] tracking-[-0.26px] ${entry.ok ? 'text-green-700' : 'text-red-600'}`}
+                  >
+                    {entry.ok ? '✓' : '✗'} {entry.title}
+                    {entry.message ? ` — ${entry.message}` : ''}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       </main>
