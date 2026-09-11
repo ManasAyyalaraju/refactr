@@ -191,24 +191,23 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     const items = state.pickerSkills
       .map(
         (skill) => `
-          <label class="refactr-skill-option">
-            <input type="checkbox" data-skill="${escapeHtml(skill)}" ${state.selectedSkills.has(skill) ? 'checked' : ''} />
-            <span>${escapeHtml(skill)}</span>
-          </label>
+          <button
+            type="button"
+            class="refactr-skill-pill ${state.selectedSkills.has(skill) ? 'selected' : ''}"
+            data-skill="${escapeHtml(skill)}"
+          >${escapeHtml(skill)}</button>
         `
       )
       .join('');
 
     return `
-      <p style="font-size:13px;color:#374151;margin:0 0 12px;">
-        Based on your resume's background, these look plausible and match this job, but
-        aren't explicitly listed on your resume. Confirm any that are actually true.
+      <p class="refactr-skill-picker-title">Skills To Add:</p>
+      <p class="refactr-skill-picker-subtitle">
+        Based on your background these are plausible skills that match the job. These aren't
+        explicitly listed on your resume. Choose those that are actually true to your background.
       </p>
-      <div class="refactr-skill-list">${items}</div>
-      <div class="refactr-actions">
-        <button type="button" class="refactr-btn refactr-btn-secondary" data-action="skip-skills">Skip</button>
-        <button type="button" class="refactr-btn" data-action="confirm-skills">Continue</button>
-      </div>
+      <div class="refactr-skill-grid">${items}</div>
+      <button type="button" class="refactr-btn refactr-btn-full" data-action="confirm-skills">Continue</button>
     `;
   }
 
@@ -258,17 +257,17 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     });
     container.querySelector('[data-action="sign-out"]')?.addEventListener('click', handleSignOut);
     container.querySelectorAll('[data-skill]').forEach((el) => {
-      el.addEventListener('change', (e) => {
+      el.addEventListener('click', () => {
         const skill = (el as HTMLElement).dataset.skill;
         if (!skill) return;
-        if ((e.target as HTMLInputElement).checked) {
-          state.selectedSkills.add(skill);
-        } else {
+        if (state.selectedSkills.has(skill)) {
           state.selectedSkills.delete(skill);
+        } else {
+          state.selectedSkills.add(skill);
         }
+        render();
       });
     });
-    container.querySelector('[data-action="skip-skills"]')?.addEventListener('click', () => runTailor([]));
     container.querySelector('[data-action="confirm-skills"]')?.addEventListener('click', () => {
       const chosen = state.pickerSkills.filter((s) => state.selectedSkills.has(s));
       // Credit a JD requirement (e.g. "data modeling techniques") if at
@@ -387,7 +386,10 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       }
 
       state.pickerSkills = overlap;
-      state.selectedSkills = new Set(overlap);
+      // Unchecked by default - require an active, deliberate confirmation
+      // per skill rather than pre-selecting everything and asking the user
+      // to opt out (which led to over-inclusion/clutter in testing).
+      state.selectedSkills = new Set();
       state.pickerSkillMatches = skillMatches;
       state.screen = 'skill-picker';
       render();
