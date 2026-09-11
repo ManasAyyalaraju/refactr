@@ -14,6 +14,7 @@ Two-step, both on the fast model tier:
    skills), so it's used as grounding context for one small LLM call rather
    than a direct lookup table.
 """
+import json
 from typing import List
 from pydantic import BaseModel
 from core.config import settings
@@ -30,6 +31,15 @@ class _ResumeDomain(BaseModel):
 
 class _SuggestedSkills(BaseModel):
     skills: List[str]
+
+
+class _SkillMatch(BaseModel):
+    jd_skill: str
+    matched_candidate_skills: List[str]
+
+
+class _SkillMatches(BaseModel):
+    matches: List[_SkillMatch]
 
 
 _FALLBACK_DOMAIN = {"industry": "General / Hybrid", "sub_domain": "General Business", "confidence": "low"}
@@ -327,3 +337,66 @@ async def infer_plausible_skills_for_resume(resume: Resume) -> List[str]:
     """Full pipeline: classify domain, then suggest concrete plausible skills."""
     domain_info = await classify_resume_domain(resume)
     return await suggest_plausible_skills(resume, domain_info)
+
+
+async def match_inferred_skills_to_jd(jd_skills: List[str], candidate_skills: List[str]) -> List[dict]:
+    """
+    Determine which of a candidate's already-vetted skills concretely
+    satisfy which of a job's skill requirements - e.g. "hyperparameter
+    tuning" satisfying a JD's "data modeling techniques", or "Python"
+    satisfying "high level programming languages". Handles the case where a
+    JD phrases a requirement as a broad knowledge area rather than a
+    specific tool, which plain string matching can never catch.
+
+    Never proposes a new skill: only matches within candidate_skills (an
+    already-grounded list - either a resume's inferred_skills, when
+    building the picker, or a user's confirmed selection from it, when
+    crediting the compatibility score). Used for score/matching purposes
+    only - the abstract jd_skill wording itself is never injected into a
+    resume; only the concrete candidate_skills are.
+
+    Returns [{"jd_skill": ..., "matched_candidate_skills": [...]}] - only
+    for requirements with a genuine match; skips anything uncertain.
+    """
+    if not client or not jd_skills or not candidate_skills:
+        return []
+
+    prompt = f"""
+A candidate has these already-vetted, plausible skills (their truthfulness is already
+established - do not question whether these are real):
+{json.dumps(candidate_skills)}
+
+A job posting lists these skill requirements, in the job's own words (some are concrete
+tools/technologies, some are broader knowledge areas or techniques):
+{json.dumps(jd_skills)}
+
+For each job requirement, determine if any of the candidate's skills above are a concrete,
+genuine instance or application of that requirement - not just loosely related. For example,
+"hyperparameter tuning" and "cross-validation" are concrete instances of "data modeling
+techniques". "Python" is a concrete instance of "high level programming languages".
+
+Rules:
+- Only include a job requirement if at least one candidate skill genuinely, concretely
+  satisfies it - skip anything uncertain, loosely associative, or a stretch.
+- Only reference skills from the candidate's list above verbatim - never invent or reword one.
+- Skip a job requirement that's already an exact or near-exact match to a candidate skill's
+  wording (e.g. both say "Python") - focus on requirements phrased more broadly than the
+  candidate's specific skill wording.
+"""
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=_SkillMatches,
+            temperature=0,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        candidate_set = {s.lower() for s in candidate_skills}
+        results = []
+        for m in parsed.matches:
+            matched = [s for s in m.matched_candidate_skills if s.lower() in candidate_set]
+            if matched:
+                results.append({"jd_skill": m.jd_skill, "matched_candidate_skills": matched})
+        return results
+    except Exception:
+        return []

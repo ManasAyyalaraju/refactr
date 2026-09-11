@@ -1,3 +1,5 @@
+from typing import List, Optional
+
 from models.resume_models import Resume, TechnicalSkillCategory
 from models.job_models import JobDescription
 from core.exceptions import TailoringGenerationError
@@ -221,7 +223,12 @@ async def _verify_and_correct_section(
                 rewritten.bullets[idx] = revised
 
 
-async def tailor_resume(resume: Resume, jd: JobDescription, domain_info: dict) -> Resume:
+async def tailor_resume(
+    resume: Resume,
+    jd: JobDescription,
+    domain_info: dict,
+    additional_skills: Optional[List[str]] = None,
+) -> Resume:
     """
     Tailor resume to the job description:
     1. Reorder skills to prioritize JD-relevant ones.
@@ -233,7 +240,22 @@ async def tailor_resume(resume: Resume, jd: JobDescription, domain_info: dict) -
        doesn't actually have; correct (bounded to one retry) or revert any
        that do.
     5. Set compact_mode based on resume fullness
+
+    `additional_skills` - skills the candidate explicitly confirmed they
+    have (e.g. from the inferred-skills picker), merged into resume.skills
+    BEFORE reordering/rewriting so they're treated as truthful: the LLM
+    rewrite sees them as part of the resume's real skill list, and the
+    bullet verifier's allowed-skill pool (read from the rewritten resume's
+    skills afterward) includes them automatically - no verifier changes
+    needed.
     """
+    if additional_skills:
+        existing_lower = {s.lower() for s in resume.skills}
+        for skill in additional_skills:
+            if skill and skill.lower() not in existing_lower:
+                resume.skills.append(skill)
+                existing_lower.add(skill.lower())
+
     # Calculate resume fullness to determine compact mode
     fullness_score = estimate_resume_fullness(resume)
 

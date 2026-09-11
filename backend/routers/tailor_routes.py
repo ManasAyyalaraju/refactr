@@ -56,12 +56,24 @@ def _merge_and_dedupe_skills(*skill_lists: List[str]) -> List[str]:
     return merged
 
 
-def _compute_compatibility(resume_skills: List[str], jd_data: Dict[str, Any]) -> Dict[str, Any]:
+def _compute_compatibility(
+    resume_skills: List[str],
+    jd_data: Dict[str, Any],
+    credited_skills: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
     Calculate compatibility using a weighted formula:
     - must-have coverage weighted 70%
     - nice-to-have coverage weighted 30%
     - cap at 60 if any must-haves are missing
+
+    credited_skills: JD skill requirements (verbatim wording) to also treat
+    as matched even though they're not a literal match in resume_skills -
+    used when the candidate confirmed a concrete skill (e.g. "hyperparameter
+    tuning") that a separate LLM pass determined concretely satisfies a more
+    broadly-worded JD requirement (e.g. "data modeling techniques"). That
+    broader wording is never written onto the resume itself - this only
+    affects the score/matched-list, not resume content.
     """
     must_have = jd_data.get("must_have_skills", []) or []
     nice_to_have = jd_data.get("nice_to_have_skills", []) or []
@@ -72,13 +84,14 @@ def _compute_compatibility(resume_skills: List[str], jd_data: Dict[str, Any]) ->
     nice_map = {_normalize_skill(s): s for s in nice_to_have}
 
     resume_norm = set(resume_map.keys())
+    credited_norm = {_normalize_skill(s) for s in (credited_skills or [])}
     must_norm = list(must_map.keys())
     nice_norm = list(nice_map.keys())
 
-    matched_must = [must_map[s] for s in must_norm if s in resume_norm]
-    matched_nice = [nice_map[s] for s in nice_norm if s in resume_norm]
-    missing_must = [must_map[s] for s in must_norm if s not in resume_norm]
-    missing_nice = [nice_map[s] for s in nice_norm if s not in resume_norm]
+    matched_must = [must_map[s] for s in must_norm if s in resume_norm or s in credited_norm]
+    matched_nice = [nice_map[s] for s in nice_norm if s in resume_norm or s in credited_norm]
+    missing_must = [must_map[s] for s in must_norm if s not in resume_norm and s not in credited_norm]
+    missing_nice = [nice_map[s] for s in nice_norm if s not in resume_norm and s not in credited_norm]
 
     total_must = len(must_norm)
     total_nice = len(nice_norm)
@@ -120,6 +133,8 @@ async def tailor_resume_from_pdf(
     jd_text: str = Form(...),
     output: str = Form("json"),
     resume_format: str = Form("regular"),
+    additional_skills: Optional[str] = Form(None),
+    credited_skills: Optional[str] = Form(None),
 ):
     """
     Upload either:
@@ -127,6 +142,19 @@ async def tailor_resume_from_pdf(
     - resume_json (an already-parsed Resume, from a previously-saved
       base_resume - skips the PDF parse entirely)
     Plus JD text.
+
+    additional_skills: optional JSON array string of skills the candidate
+    explicitly confirmed (e.g. from the inferred-skills picker) - merged
+    into the resume's truthful skill pool before tailoring.
+
+    credited_skills: optional JSON array string of JD requirement phrases
+    (verbatim from the JD's must/nice-to-have lists) that the frontend
+    already determined are satisfied by the confirmed additional_skills, via
+    /api/jd/parse's skill_matches (computed there against the resume's full
+    inferred_skills pool, which gives the model more context to judge a
+    match confidently than re-deriving it here against only the smaller
+    confirmed subset would). Only affects the compatibility score/matched
+    list - never written onto the resume itself.
     Returns:
     - Tailored resume JSON
     """
@@ -146,8 +174,30 @@ async def tailor_resume_from_pdf(
         )
 
     # Validated up-front (not inside the try/except below) so a malformed
-    # resume_json surfaces as its own 400 instead of being swallowed by the
-    # generic 500 handler further down.
+    # resume_json/additional_skills surfaces as its own 400 instead of being
+    # swallowed by the generic 500 handler further down.
+    parsed_additional_skills: List[str] = []
+    if additional_skills:
+        try:
+            parsed_additional_skills = json.loads(additional_skills)
+            if not isinstance(parsed_additional_skills, list) or not all(
+                isinstance(s, str) for s in parsed_additional_skills
+            ):
+                raise ValueError("additional_skills must be a JSON array of strings")
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid additional_skills.")
+
+    parsed_credited_skills: List[str] = []
+    if credited_skills:
+        try:
+            parsed_credited_skills = json.loads(credited_skills)
+            if not isinstance(parsed_credited_skills, list) or not all(
+                isinstance(s, str) for s in parsed_credited_skills
+            ):
+                raise ValueError("credited_skills must be a JSON array of strings")
+        except (json.JSONDecodeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid credited_skills.")
+
     parsed_resume: Optional[Resume] = None
     if resume_json is not None:
         try:
@@ -205,11 +255,26 @@ async def tailor_resume_from_pdf(
 
         # 3) Tailor
         with timed_stage("tailor", timings):
-            tailored_resume = await tailor_resume(resume, jd, domain_info)
+            tailored_resume = await tailor_resume(resume, jd, domain_info, parsed_additional_skills)
 
         # 3b) Compatibility report
         jd_data = jd.model_dump()
         compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data)
+
+        # If the frontend determined (via /api/jd/parse's skill_matches, run
+        # earlier against the resume's full inferred_skills pool) that some
+        # confirmed skills satisfy a JD requirement phrased more broadly than
+        # their own wording, credit those requirements here. Restricted to
+        # the JD's own verbatim requirement text and to requirements still
+        # missing after the exact-match pass, so a malformed/tampered value
+        # can't inflate the score - only affects the score/matched list, the
+        # broader wording itself is never written onto the resume.
+        if parsed_credited_skills:
+            still_missing = set(compatibility["missing_must_have"] + compatibility["missing_nice_to_have"])
+            all_jd_skills = set((jd.must_have_skills or []) + (jd.nice_to_have_skills or []))
+            credited = [s for s in parsed_credited_skills if s in still_missing and s in all_jd_skills]
+            if credited:
+                compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
 
         timings_header = json.dumps(timings)
 
