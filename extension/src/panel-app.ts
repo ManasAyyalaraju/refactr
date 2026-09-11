@@ -1,12 +1,21 @@
 import type { User } from '@supabase/supabase-js';
 import { getSupabaseClient } from './lib/supabase-client';
 import { listBaseResumes, downloadBaseResume, uploadGeneratedResume, type BaseResumeRow } from './lib/resumes';
-import { tailorResumePdf } from './lib/api';
+import { tailorResumePdf, parseJobDescription, type SkillMatch } from './lib/api';
 import { blobToDataUrl } from './lib/data-url';
 import type { JobContext } from './lib/extract-jd';
 import { WEB_APP_URL } from './lib/config';
 
-type Screen = 'loading' | 'login' | 'waiting-login' | 'picker' | 'tailoring' | 'done' | 'error';
+type Screen =
+  | 'loading'
+  | 'login'
+  | 'waiting-login'
+  | 'picker'
+  | 'checking-skills'
+  | 'skill-picker'
+  | 'tailoring'
+  | 'done'
+  | 'error';
 
 export interface PanelAppOptions {
   container: HTMLElement;
@@ -23,6 +32,9 @@ interface State {
   errorMessage: string;
   lastScore: number | null;
   lastResultId: string | null;
+  pickerSkills: string[];
+  selectedSkills: Set<string>;
+  pickerSkillMatches: SkillMatch[];
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -41,6 +53,9 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     errorMessage: '',
     lastScore: null,
     lastResultId: null,
+    pickerSkills: [],
+    selectedSkills: new Set(),
+    pickerSkillMatches: [],
   };
 
   function render() {
@@ -79,6 +94,10 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
         `;
       case 'picker':
         return renderPicker();
+      case 'checking-skills':
+        return `<div class="refactr-status"><div class="refactr-spinner"></div><p>Checking for matching skills...</p></div>`;
+      case 'skill-picker':
+        return renderSkillPicker();
       case 'tailoring':
         return `<div class="refactr-status"><div class="refactr-spinner"></div><p>Tailoring your resume...</p></div>`;
       case 'done':
@@ -168,6 +187,31 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     `;
   }
 
+  function renderSkillPicker(): string {
+    const items = state.pickerSkills
+      .map(
+        (skill) => `
+          <label class="refactr-skill-option">
+            <input type="checkbox" data-skill="${escapeHtml(skill)}" ${state.selectedSkills.has(skill) ? 'checked' : ''} />
+            <span>${escapeHtml(skill)}</span>
+          </label>
+        `
+      )
+      .join('');
+
+    return `
+      <p style="font-size:13px;color:#374151;margin:0 0 12px;">
+        Based on your resume's background, these look plausible and match this job, but
+        aren't explicitly listed on your resume. Confirm any that are actually true.
+      </p>
+      <div class="refactr-skill-list">${items}</div>
+      <div class="refactr-actions">
+        <button type="button" class="refactr-btn refactr-btn-secondary" data-action="skip-skills">Skip</button>
+        <button type="button" class="refactr-btn" data-action="confirm-skills">Continue</button>
+      </div>
+    `;
+  }
+
   function renderAccountFooter(): string {
     return `
       <p class="refactr-footer-link" style="margin-top:14px;font-size:12px;color:#6b7280;">
@@ -192,6 +236,9 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     container.querySelector('[data-action="reset"]')?.addEventListener('click', () => {
       state.lastScore = null;
       state.lastResultId = null;
+      state.pickerSkills = [];
+      state.selectedSkills = new Set();
+      state.pickerSkillMatches = [];
       state.screen = 'picker';
       render();
     });
@@ -210,6 +257,31 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       state.selectedResumeId = (e.target as HTMLSelectElement).value;
     });
     container.querySelector('[data-action="sign-out"]')?.addEventListener('click', handleSignOut);
+    container.querySelectorAll('[data-skill]').forEach((el) => {
+      el.addEventListener('change', (e) => {
+        const skill = (el as HTMLElement).dataset.skill;
+        if (!skill) return;
+        if ((e.target as HTMLInputElement).checked) {
+          state.selectedSkills.add(skill);
+        } else {
+          state.selectedSkills.delete(skill);
+        }
+      });
+    });
+    container.querySelector('[data-action="skip-skills"]')?.addEventListener('click', () => runTailor([]));
+    container.querySelector('[data-action="confirm-skills"]')?.addEventListener('click', () => {
+      const chosen = state.pickerSkills.filter((s) => state.selectedSkills.has(s));
+      // Credit a JD requirement (e.g. "data modeling techniques") if at
+      // least one of the skills that satisfy it was actually confirmed -
+      // computed from the full-pool matches already found by the earlier
+      // overlap check, not re-derived against just the confirmed subset (a
+      // smaller pool makes the match-judgment markedly less reliable).
+      const chosenLower = new Set(chosen.map((s) => s.toLowerCase()));
+      const credited = state.pickerSkillMatches
+        .filter((m) => m.matched_candidate_skills.some((s) => chosenLower.has(s.toLowerCase())))
+        .map((m) => m.jd_skill);
+      runTailor(chosen, credited);
+    });
   }
 
   async function handleSignOut() {
@@ -273,6 +345,64 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
     if (!resume) return;
 
+    // Only resumes with inferred_skills (saved after Phase 1, or reparsed)
+    // have anything to offer here - skip straight to tailoring otherwise.
+    if (!resume.inferred_skills || resume.inferred_skills.length === 0) {
+      await runTailor([]);
+      return;
+    }
+
+    state.screen = 'checking-skills';
+    render();
+
+    try {
+      const { jobDescription: jd, skillMatches } = await parseJobDescription(
+        jobContext.description,
+        resume.inferred_skills
+      );
+      const explicitLower = new Set(
+        ((resume.parsed_data?.skills as string[] | undefined) ?? []).map((s) => s.toLowerCase())
+      );
+
+      // Plain literal overlap (e.g. JD says "Docker", inferred_skills has "Docker").
+      const jdSkillsLower = new Set(
+        [...(jd.must_have_skills ?? []), ...(jd.nice_to_have_skills ?? [])].map((s) => s.toLowerCase())
+      );
+      const literalOverlap = resume.inferred_skills.filter(
+        (s) => jdSkillsLower.has(s.toLowerCase()) && !explicitLower.has(s.toLowerCase())
+      );
+
+      // Semantic overlap (e.g. JD says "data modeling techniques", candidate
+      // has "hyperparameter tuning") - a JD requirement phrased more broadly
+      // than any single skill's own wording, which literal matching can't catch.
+      const semanticOverlap = skillMatches
+        .flatMap((m) => m.matched_candidate_skills)
+        .filter((s) => !explicitLower.has(s.toLowerCase()));
+
+      const overlap = Array.from(new Set([...literalOverlap, ...semanticOverlap]));
+
+      if (overlap.length === 0) {
+        await runTailor([]);
+        return;
+      }
+
+      state.pickerSkills = overlap;
+      state.selectedSkills = new Set(overlap);
+      state.pickerSkillMatches = skillMatches;
+      state.screen = 'skill-picker';
+      render();
+    } catch {
+      // Non-critical enhancement - don't block tailoring if this check fails.
+      await runTailor([]);
+    }
+  }
+
+  async function runTailor(additionalSkills: string[], creditedSkills: string[] = []) {
+    if (!state.user || !jobContext || !state.selectedResumeId) return;
+
+    const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
+    if (!resume) return;
+
     state.screen = 'tailoring';
     render();
 
@@ -292,6 +422,8 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
         ...sourceParams,
         jobDescription: jobContext.description,
         resumeFormat: state.resumeFormat,
+        additionalSkills,
+        creditedSkills,
       });
 
       await downloadBlob(tailorResult.pdfBlob, 'tailored_resume.pdf');

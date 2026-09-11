@@ -12,6 +12,9 @@ export interface BaseResumeRow {
   // to the backend to skip a redundant PDF parse. Null for resumes saved
   // before this existed.
   parsed_data: Record<string, unknown> | null;
+  // Plausible-but-unlisted skills inferred at save time (Phase 1). Used to
+  // offer a confirm/inject picker when they overlap with a job's skills.
+  inferred_skills: string[] | null;
 }
 
 function randomId(): string {
@@ -24,7 +27,7 @@ export async function listBaseResumes(
 ): Promise<BaseResumeRow[]> {
   const { data, error } = await supabase
     .from('base_resumes')
-    .select('id, title, storage_path, file_name, created_at, parsed_data')
+    .select('id, title, storage_path, file_name, created_at, parsed_data, inferred_skills')
     .eq('user_id', userId)
     .order('created_at', { ascending: false });
 

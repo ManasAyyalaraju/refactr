@@ -276,3 +276,45 @@
   font-size: 14px;
   color: #374151;
 }
+
+.refactr-skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.refactr-skill-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #000000;
+  cursor: pointer;
+}
+
+.refactr-skill-option:hover {
+  border-color: #187fe7;
+}
+
+.refactr-skill-option input {
+  width: 16px;
+  height: 16px;
+  accent-color: #187fe7;
+  cursor: pointer;
+}
+
+.refactr-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.refactr-actions .refactr-btn,
+.refactr-actions .refactr-btn-secondary {
+  flex: 1;
+}

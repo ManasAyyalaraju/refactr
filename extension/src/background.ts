@@ -16,9 +16,17 @@ interface TailorResumeMessage {
   fileName?: string;
   jobDescription: string;
   resumeFormat: 'regular' | 'technical';
+  additionalSkills?: string[];
+  creditedSkills?: string[];
 }
 
-type Message = DownloadFileMessage | TailorResumeMessage;
+interface ParseJdMessage {
+  type: 'PARSE_JD';
+  jobDescription: string;
+  inferredSkills?: string[];
+}
+
+type Message = DownloadFileMessage | TailorResumeMessage | ParseJdMessage;
 
 chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
   if (message.type === 'DOWNLOAD_FILE') {
@@ -52,6 +60,12 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
           formData.append('jd_text', message.jobDescription);
           formData.append('output', output);
           formData.append('resume_format', message.resumeFormat);
+          if (message.additionalSkills && message.additionalSkills.length > 0) {
+            formData.append('additional_skills', JSON.stringify(message.additionalSkills));
+          }
+          if (message.creditedSkills && message.creditedSkills.length > 0) {
+            formData.append('credited_skills', JSON.stringify(message.creditedSkills));
+          }
           return formData;
         };
 
@@ -91,6 +105,36 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
         });
       } catch (err) {
         sendResponse({ ok: false, error: err instanceof Error ? err.message : 'Tailoring failed.' });
+      }
+    })();
+    return true; // keep the message channel open for the async sendResponse
+  }
+
+  if (message.type === 'PARSE_JD') {
+    // Same CSP-routing reason as TAILOR_RESUME above.
+    (async () => {
+      try {
+        const formData = new FormData();
+        formData.append('jd_text', message.jobDescription);
+        if (message.inferredSkills && message.inferredSkills.length > 0) {
+          formData.append('inferred_skills', JSON.stringify(message.inferredSkills));
+        }
+
+        const response = await fetch(`${API_BASE_URL}/api/jd/parse`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const text = await response.text().catch(() => '');
+          sendResponse({ ok: false, error: `Parsing job description failed (${response.status}): ${text.slice(0, 300)}` });
+          return;
+        }
+
+        const result = await response.json();
+        sendResponse({ ok: true, jobDescription: result.job_description, skillMatches: result.skill_matches });
+      } catch (err) {
+        sendResponse({ ok: false, error: err instanceof Error ? err.message : 'Failed to parse job description.' });
       }
     })();
     return true; // keep the message channel open for the async sendResponse
