@@ -9,7 +9,7 @@ import ErrorMessage from '@/components/ErrorMessage';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
-import { uploadBaseResume } from '@/lib/supabase/resumes';
+import { uploadBaseResume, findBaseResumeByFileName, replaceBaseResume, BaseResumeRow } from '@/lib/supabase/resumes';
 import {
   reformatResume,
   fetchTemplatePreview,
@@ -27,6 +27,9 @@ export default function NewResumePage() {
   const [previewUrls, setPreviewUrls] = useState<Record<ResumeFormat, string>>({ regular: '', technical: '' });
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState('');
+  const [duplicateResume, setDuplicateResume] = useState<BaseResumeRow | null>(null);
+  const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+  const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
 
   useEffect(() => {
     let regularUrl = '';
@@ -46,7 +49,41 @@ export default function NewResumePage() {
     };
   }, []);
 
-  const handleSave = async () => {
+  const handleFileSelect = async (file: File | null) => {
+    setSelectedFile(file);
+    setReplaceTargetId(null);
+    setDuplicateResume(null);
+    setError('');
+
+    if (!file || !user) return;
+
+    setIsCheckingDuplicate(true);
+    try {
+      const existing = await findBaseResumeByFileName(supabase, user.id, file.name);
+      if (existing) {
+        setDuplicateResume(existing);
+      }
+    } catch (err) {
+      console.error('Duplicate check failed:', err);
+      setError('Could not check for an existing resume with this name. Please try uploading again.');
+      setSelectedFile(null);
+    } finally {
+      setIsCheckingDuplicate(false);
+    }
+  };
+
+  const handleReplaceConfirm = () => {
+    if (!duplicateResume) return;
+    setReplaceTargetId(duplicateResume.id);
+    setDuplicateResume(null);
+  };
+
+  const handleReplaceCancel = () => {
+    setDuplicateResume(null);
+    setSelectedFile(null);
+  };
+
+  const saveResume = async (replaceId: string | null) => {
     if (!selectedFile || !user) return;
 
     setIsSaving(true);
@@ -67,7 +104,9 @@ export default function NewResumePage() {
 
     const { resume, inferred_skills, pdf_base64 } = reformatResponse.data as ReformatJsonResult;
     const reformattedFile = base64ToFile(pdf_base64, selectedFile.name);
-    const result = await uploadBaseResume(supabase, user.id, reformattedFile, resume, inferred_skills);
+    const result = replaceId
+      ? await replaceBaseResume(supabase, replaceId, user.id, reformattedFile, resume, inferred_skills)
+      : await uploadBaseResume(supabase, user.id, reformattedFile, resume, inferred_skills);
 
     if (!result) {
       setError('Failed to save your resume. Please try again.');
@@ -106,11 +145,15 @@ export default function NewResumePage() {
                 <LoadingSpinner message="Reformatting your resume..." submessage="This usually finishes in under a minute." />
               </div>
             ) : (
-              <FileUpload selectedFile={selectedFile} onFileSelect={setSelectedFile} />
+              <FileUpload selectedFile={selectedFile} onFileSelect={handleFileSelect} />
             )}
           </div>
 
-          {!isSaving && selectedFile && (
+          {!isSaving && selectedFile && isCheckingDuplicate && (
+            <p className="text-sm text-gray-500 mb-8">Checking your saved resumes...</p>
+          )}
+
+          {!isSaving && selectedFile && !isCheckingDuplicate && !duplicateResume && (
             <>
               <div className="bg-[#fffcfc] border border-[#504b4b] rounded-[4px] p-8 mb-8">
                 <div className="mb-6">
@@ -159,7 +202,7 @@ export default function NewResumePage() {
 
               <div className="text-center">
                 <button
-                  onClick={handleSave}
+                  onClick={() => saveResume(replaceTargetId)}
                   disabled={isSaving}
                   className="inline-flex items-center justify-center gap-3 bg-[#187fe7] hover:bg-[#146bc7] text-white px-10 py-4 rounded-[14px] font-semibold text-lg shadow-[0px_4px_2px_rgba(0,0,0,0.25)] transition-colors cursor-pointer"
                 >
@@ -170,6 +213,37 @@ export default function NewResumePage() {
           )}
         </div>
       </main>
+
+      {duplicateResume && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
+          <div className="bg-[#fffcfc] border border-black rounded-[4px] p-6 sm:p-8 max-w-md w-full">
+            <p className="font-bold text-[18px] tracking-[-0.36px] text-black mb-2">
+              Replace existing resume?
+            </p>
+            <p className="text-[14px] tracking-[-0.28px] text-black/70 mb-6">
+              You already have a resume named &quot;{duplicateResume.title}&quot;. Replacing it
+              will overwrite its saved file and data - past tailored resumes generated from it
+              stay linked to the new version. This can&apos;t be undone.
+            </p>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleReplaceCancel}
+                className="px-5 py-2.5 rounded-[14px] text-[14px] text-black hover:bg-gray-100 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleReplaceConfirm}
+                className="bg-[#187fe7] hover:bg-[#146bc7] text-white px-5 py-2.5 rounded-[14px] text-[14px] font-semibold transition-colors cursor-pointer"
+              >
+                Replace
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Footer />
     </div>

@@ -81,6 +81,91 @@ export async function uploadBaseResume(
   }
 }
 
+/**
+ * Throws on a query failure rather than swallowing it - the caller must
+ * treat "the check failed" differently from "no duplicate exists" (a
+ * silent duplicate-creation bug came from conflating the two: an error was
+ * being treated the same as "no match," so the upload silently proceeded
+ * as if nothing existed).
+ */
+export async function findBaseResumeByFileName(
+  supabase: SupabaseClient,
+  userId: string,
+  fileName: string
+): Promise<BaseResumeRow | null> {
+  // .limit(1) rather than .maybeSingle() - this feature stops new duplicates
+  // from being created going forward, but accounts with pre-existing
+  // same-named rows (uploaded before this existed) can already have more
+  // than one match, which .maybeSingle() would throw on. Target the most
+  // recently saved one.
+  const { data, error } = await supabase
+    .from('base_resumes')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('file_name', fileName)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.[0] ?? null;
+}
+
+/**
+ * Replace an existing base_resumes row in place (same row id), so any
+ * generated_resumes history linked via base_resume_id stays correctly
+ * associated. Uploads the new file to a fresh storage path, updates the
+ * row, then cleans up the old storage object.
+ */
+export async function replaceBaseResume(
+  supabase: SupabaseClient,
+  existingResumeId: string,
+  userId: string,
+  file: File,
+  parsedData?: Resume | null,
+  inferredSkills?: string[] | null
+): Promise<{ id: string; storage_path: string } | null> {
+  try {
+    const { data: existingRow } = await supabase
+      .from('base_resumes')
+      .select('storage_path')
+      .eq('id', existingResumeId)
+      .single();
+
+    const newStoragePath = `${userId}/${randomId()}-${file.name}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('base-resumes')
+      .upload(newStoragePath, file, { contentType: file.type || 'application/pdf' });
+    if (uploadError) throw uploadError;
+
+    const { data, error: updateError } = await supabase
+      .from('base_resumes')
+      .update({
+        title: file.name,
+        storage_path: newStoragePath,
+        file_name: file.name,
+        parsed_data: parsedData ?? null,
+        inferred_skills: inferredSkills ?? null,
+      })
+      .eq('id', existingResumeId)
+      .select('id, storage_path')
+      .single();
+    if (updateError) throw updateError;
+
+    if (existingRow?.storage_path && existingRow.storage_path !== newStoragePath) {
+      await supabase.storage.from('base-resumes').remove([existingRow.storage_path]);
+    }
+
+    return data;
+  } catch (err) {
+    console.error('replaceBaseResume failed:', err);
+    return null;
+  }
+}
+
 export async function uploadGeneratedResume(
   supabase: SupabaseClient,
   userId: string,
