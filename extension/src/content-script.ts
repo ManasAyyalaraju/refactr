@@ -105,9 +105,17 @@ async function renderPrompt(jobContext: JobContext) {
     // leave the host's shrink-wrapped width wider than the visible panel.
     panelContainer.style.display = 'contents';
     shadow.appendChild(panelContainer);
+    // Re-extract rather than reusing the jobContext captured when the small
+    // prompt first appeared (within ~4s of page load, with a limited retry
+    // window) - on a slower-rendering page (e.g. a promoted listing with
+    // extra tracking scripts), that first pass can lock onto the generic
+    // "biggest text block" fallback before the real description has
+    // rendered. By the time the user reads the prompt and clicks this,
+    // real content has had much more time to load.
+    const freshJobContext = extractJobContext(window.location.href, { allowGenericFallback: true }) ?? jobContext;
     mountPanelApp({
       container: panelContainer,
-      jobContext,
+      jobContext: freshJobContext,
       onClose: () => {
         dismissedForThisPage = true;
         teardown();
