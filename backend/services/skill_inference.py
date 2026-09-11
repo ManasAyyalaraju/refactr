@@ -379,9 +379,11 @@ Rules:
 - Only include a job requirement if at least one candidate skill genuinely, concretely
   satisfies it - skip anything uncertain, loosely associative, or a stretch.
 - Only reference skills from the candidate's list above verbatim - never invent or reword one.
-- Skip a job requirement that's already an exact or near-exact match to a candidate skill's
-  wording (e.g. both say "Python") - focus on requirements phrased more broadly than the
-  candidate's specific skill wording.
+- Include a requirement even if a candidate skill's wording is only slightly different from it
+  (e.g. "Python" satisfies both "Python programming" and "data analysis" satisfies "data
+  analytics") - callers of this function already remove anything that's an exact, identically-
+  worded match before calling it, so do not skip a requirement just because a candidate skill's
+  wording looks similar to it.
 """
     try:
         response = await client.chat.completions.parse(

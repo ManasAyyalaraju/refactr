@@ -19,6 +19,7 @@ from models.resume_models import Resume
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.job_parser import parse_job_description_from_text
 from services.tailor_engine import tailor_resume, ensure_technical_skills
+from services.skill_inference import match_inferred_skills_to_jd
 from services.pdf_writer import render_resume_pdf
 
 logger = logging.getLogger(__name__)
@@ -241,7 +242,16 @@ async def tailor_resume_from_pdf(
 
         category_skills: List[str] = [item for cat in resume.technical_skills for item in cat.items]
 
-        resume.skills = _merge_and_dedupe_skills(resume.skills or [], line_skills, category_skills)
+        # additional_skills (confirmed from the picker) must be merged in
+        # here, before categorize_skills below - not left to tailor_resume()'s
+        # own merge, which runs after categorization and left newly-confirmed
+        # skills out of the rendered TECHNICAL SKILLS section entirely even
+        # though they appeared in the flat skills list. tailor_resume() still
+        # merges them too (idempotent - a no-op for anything already present)
+        # so it stays correct if ever called without this router in front of it.
+        resume.skills = _merge_and_dedupe_skills(
+            resume.skills or [], line_skills, category_skills, parsed_additional_skills
+        )
 
         # Categorize skills into TECHNICAL SKILLS *before* tailoring so the
         # compact-mode/spacing decision (computed inside tailor_resume) knows
@@ -275,6 +285,24 @@ async def tailor_resume_from_pdf(
             credited = [s for s in parsed_credited_skills if s in still_missing and s in all_jd_skills]
             if credited:
                 compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
+
+        # A second, server-side pass: the frontend's credited_skills above
+        # only ever considered the resume's *inferred* skills (computed at
+        # picker time) as evidence - it has no way to know whether a JD
+        # requirement is actually satisfied by a skill the candidate already
+        # had explicitly listed (e.g. "business intelligence" satisfied by an
+        # already-listed "Power BI"/"Tableau", not anything from the picker).
+        # Only runs when the picker was actually used (same cost/latency
+        # footprint as the pass above, not added to every tailor request),
+        # using the full final skill list (explicit + confirmed) as context.
+        if parsed_additional_skills:
+            still_missing = compatibility["missing_must_have"] + compatibility["missing_nice_to_have"]
+            if still_missing:
+                with timed_stage("credit_explicit_skills", timings):
+                    matches = await match_inferred_skills_to_jd(still_missing, tailored_resume.skills or [])
+                credited = [m["jd_skill"] for m in matches]
+                if credited:
+                    compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
 
         timings_header = json.dumps(timings)
 
