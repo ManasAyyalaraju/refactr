@@ -4,16 +4,18 @@ import logging
 import os
 import re
 import tempfile
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AuthenticationError
+from pydantic import ValidationError
 
 from core.config import settings
 from core.exceptions import TailoringGenerationError
 from core.timing import timed_stage
+from models.resume_models import Resume
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.job_parser import parse_job_description_from_text
 from services.tailor_engine import tailor_resume, ensure_technical_skills
@@ -113,18 +115,26 @@ def _compute_compatibility(resume_skills: List[str], jd_data: Dict[str, Any]) ->
 
 @router.post("/tailor/pdf")
 async def tailor_resume_from_pdf(
-    pdf: UploadFile = File(...),
+    pdf: Optional[UploadFile] = File(None),
+    resume_json: Optional[str] = Form(None),
     jd_text: str = Form(...),
     output: str = Form("json"),
     resume_format: str = Form("regular"),
 ):
     """
-    Upload:
-    - Resume PDF
-    - JD text
+    Upload either:
+    - Resume PDF (parsed fresh), or
+    - resume_json (an already-parsed Resume, from a previously-saved
+      base_resume - skips the PDF parse entirely)
+    Plus JD text.
     Returns:
     - Tailored resume JSON
     """
+    if bool(pdf) == bool(resume_json):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of 'pdf' or 'resume_json'.",
+        )
 
     # Validate API key before processing
     try:
@@ -135,24 +145,42 @@ async def tailor_resume_from_pdf(
             detail=str(e)
         )
 
-    # Unique per-request temp filename - reusing pdf.filename directly let
-    # two concurrent requests uploading a common name (e.g. "resume.pdf")
-    # collide on the same path.
-    suffix = os.path.splitext(pdf.filename or "")[1] or ".pdf"
-    fd, temp_path = tempfile.mkstemp(suffix=suffix)
-    with os.fdopen(fd, "wb") as f:
-        f.write(await pdf.read())
+    # Validated up-front (not inside the try/except below) so a malformed
+    # resume_json surfaces as its own 400 instead of being swallowed by the
+    # generic 500 handler further down.
+    parsed_resume: Optional[Resume] = None
+    if resume_json is not None:
+        try:
+            parsed_resume = Resume.model_validate(json.loads(resume_json))
+        except (json.JSONDecodeError, ValidationError):
+            raise HTTPException(status_code=400, detail="Invalid resume_json.")
+
+    temp_path: Optional[str] = None
+    if pdf is not None:
+        # Unique per-request temp filename - reusing pdf.filename directly let
+        # two concurrent requests uploading a common name (e.g. "resume.pdf")
+        # collide on the same path.
+        suffix = os.path.splitext(pdf.filename or "")[1] or ".pdf"
+        fd, temp_path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "wb") as f:
+            f.write(await pdf.read())
 
     timings: Dict[str, int] = {}
 
     try:
-        # 1) PDF -> Resume Object, JD text -> JobDescription (independent of
-        # each other, so run them concurrently instead of sequentially)
-        with timed_stage("parse_resume_and_jd", timings):
-            resume, (jd, domain_info) = await asyncio.gather(
-                parse_pdf_resume_to_json(temp_path),
-                parse_job_description_from_text(jd_text),
-            )
+        if temp_path is not None:
+            # 1) PDF -> Resume Object, JD text -> JobDescription (independent
+            # of each other, so run them concurrently instead of sequentially)
+            with timed_stage("parse_resume_and_jd", timings):
+                resume, (jd, domain_info) = await asyncio.gather(
+                    parse_pdf_resume_to_json(temp_path),
+                    parse_job_description_from_text(jd_text),
+                )
+        else:
+            # Already-parsed resume supplied - only the JD needs parsing.
+            resume = parsed_resume
+            with timed_stage("parse_jd", timings):
+                jd, domain_info = await parse_job_description_from_text(jd_text)
 
         # Parse any dedicated skills line and MERGE with extracted skills (do not overwrite).
         line_skills: List[str] = []
@@ -226,7 +254,8 @@ async def tailor_resume_from_pdf(
             detail="An internal error occurred while processing your request."
         )
     finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+        if temp_path is not None:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
