@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import tempfile
 import shutil
@@ -39,6 +40,11 @@ def _dedupe_additional_info_against_technical_skills(resume: Resume) -> None:
         resume.additional_info.professional_memberships = []
 
 
+_CONTROL_CHARS_RE = re.compile(
+    "[" + "".join(chr(c) for c in range(0x00, 0x20) if chr(c) not in "\t\n\r") + chr(0x7F) + "]"
+)
+
+
 def escape_latex(text: str) -> str:
     """
     Escape special LaTeX characters in text.
@@ -46,10 +52,16 @@ def escape_latex(text: str) -> str:
     """
     if not text:
         return ""
-    
+
     if not isinstance(text, str):
         text = str(text)
-    
+
+    # Strip C0/DEL control characters (never legitimate in resume text) -
+    # pdflatex fails outright on a raw control byte like U+0002 rather than
+    # rendering it as anything. These occasionally slip in as a rare LLM
+    # sampling artifact in rewritten bullet text.
+    text = _CONTROL_CHARS_RE.sub("", text)
+
     # Escape backslash first, then other characters
     # Order matters! Do backslash first so other escapes work correctly
     text = text.replace('\\', r'\textbackslash{}')
