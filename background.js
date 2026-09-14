@@ -20274,9 +20274,6 @@ ${suffix}`;
             if (message.additionalSkills && message.additionalSkills.length > 0) {
               formData.append("additional_skills", JSON.stringify(message.additionalSkills));
             }
-            if (message.creditedSkills && message.creditedSkills.length > 0) {
-              formData.append("credited_skills", JSON.stringify(message.creditedSkills));
-            }
             return formData;
           };
           const jsonResponse = await fetch(`${API_BASE_URL}/api/tailor/pdf`, {
@@ -20318,6 +20315,9 @@ ${suffix}`;
           formData.append("jd_text", message.jobDescription);
           if (message.inferredSkills && message.inferredSkills.length > 0) {
             formData.append("inferred_skills", JSON.stringify(message.inferredSkills));
+          }
+          if (message.explicitSkills && message.explicitSkills.length > 0) {
+            formData.append("explicit_skills", JSON.stringify(message.explicitSkills));
           }
           const response = await fetch(`${API_BASE_URL}/api/jd/parse`, {
             method: "POST",

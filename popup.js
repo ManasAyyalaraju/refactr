@@ -20305,8 +20305,7 @@ ${suffix}`;
     fileName,
     jobDescription,
     resumeFormat,
-    additionalSkills,
-    creditedSkills
+    additionalSkills
   }) {
     const pdfDataUrl = pdfBlob ? await blobToDataUrl(pdfBlob) : void 0;
     const response = await chrome.runtime.sendMessage({
@@ -20316,8 +20315,7 @@ ${suffix}`;
       fileName,
       jobDescription,
       resumeFormat,
-      additionalSkills,
-      creditedSkills
+      additionalSkills
     });
     if (!response?.ok) {
       throw new Error(response?.error || "Tailoring failed.");
@@ -20329,11 +20327,12 @@ ${suffix}`;
       resumeSkills: response.resumeSkills
     };
   }
-  async function parseJobDescription(jobDescription, inferredSkills) {
+  async function parseJobDescription(jobDescription, inferredSkills, explicitSkills) {
     const response = await chrome.runtime.sendMessage({
       type: "PARSE_JD",
       jobDescription,
-      inferredSkills
+      inferredSkills,
+      explicitSkills
     });
     if (!response?.ok) {
       throw new Error(response?.error || "Failed to parse job description.");
@@ -20357,8 +20356,7 @@ ${suffix}`;
       lastScore: null,
       lastResultId: null,
       pickerSkills: [],
-      selectedSkills: /* @__PURE__ */ new Set(),
-      pickerSkillMatches: []
+      selectedSkills: /* @__PURE__ */ new Set()
     };
     function render() {
       container.innerHTML = `
@@ -20513,7 +20511,6 @@ ${suffix}`;
         state.lastResultId = null;
         state.pickerSkills = [];
         state.selectedSkills = /* @__PURE__ */ new Set();
-        state.pickerSkillMatches = [];
         state.screen = "picker";
         render();
       });
@@ -20546,9 +20543,7 @@ ${suffix}`;
       });
       container.querySelector('[data-action="confirm-skills"]')?.addEventListener("click", () => {
         const chosen = state.pickerSkills.filter((s) => state.selectedSkills.has(s));
-        const chosenLower = new Set(chosen.map((s) => s.toLowerCase()));
-        const credited = state.pickerSkillMatches.filter((m) => m.matched_candidate_skills.some((s) => chosenLower.has(s.toLowerCase()))).map((m) => m.jd_skill);
-        runTailor(chosen, credited);
+        runTailor(chosen);
       });
     }
     async function handleSignOut() {
@@ -20610,35 +20605,56 @@ ${suffix}`;
       state.screen = "checking-skills";
       render();
       try {
+        const explicitSkills = resume.parsed_data?.skills ?? [];
         const { jobDescription: jd, skillMatches } = await parseJobDescription(
           jobContext.description,
-          resume.inferred_skills
+          resume.inferred_skills,
+          explicitSkills
         );
-        const explicitLower = new Set(
-          (resume.parsed_data?.skills ?? []).map((s) => s.toLowerCase())
-        );
+        const explicitLower = new Set(explicitSkills.map((s) => s.toLowerCase()));
+        const mustHaveLower = new Set((jd.must_have_skills ?? []).map((s) => s.toLowerCase()));
         const jdSkillsLower = new Set(
           [...jd.must_have_skills ?? [], ...jd.nice_to_have_skills ?? []].map((s) => s.toLowerCase())
         );
-        const literalOverlap = resume.inferred_skills.filter(
-          (s) => jdSkillsLower.has(s.toLowerCase()) && !explicitLower.has(s.toLowerCase())
-        );
-        const semanticOverlap = skillMatches.flatMap((m) => m.matched_candidate_skills).filter((s) => !explicitLower.has(s.toLowerCase()));
-        const overlap = Array.from(/* @__PURE__ */ new Set([...literalOverlap, ...semanticOverlap]));
-        if (overlap.length === 0) {
+        const coveredByExplicit = /* @__PURE__ */ new Set();
+        for (const skill of explicitSkills) {
+          if (jdSkillsLower.has(skill.toLowerCase())) coveredByExplicit.add(skill.toLowerCase());
+        }
+        for (const m of skillMatches) {
+          if (m.matched_candidate_skills.some((s) => explicitLower.has(s.toLowerCase()))) {
+            coveredByExplicit.add(m.jd_skill.toLowerCase());
+          }
+        }
+        const impact = /* @__PURE__ */ new Map();
+        const bump = (skill, weight) => impact.set(skill, (impact.get(skill) ?? 0) + weight);
+        for (const skill of resume.inferred_skills) {
+          const lower = skill.toLowerCase();
+          if (jdSkillsLower.has(lower) && !coveredByExplicit.has(lower)) {
+            bump(skill, mustHaveLower.has(lower) ? 2 : 1);
+          }
+        }
+        for (const m of skillMatches) {
+          const lower = m.jd_skill.toLowerCase();
+          if (coveredByExplicit.has(lower)) continue;
+          const weight = mustHaveLower.has(lower) ? 2 : 1;
+          for (const s of m.matched_candidate_skills) {
+            if (!explicitLower.has(s.toLowerCase())) bump(s, weight);
+          }
+        }
+        if (impact.size === 0) {
           await runTailor([]);
           return;
         }
+        const overlap = Array.from(impact.keys()).sort((a, b) => impact.get(b) - impact.get(a));
         state.pickerSkills = overlap;
         state.selectedSkills = /* @__PURE__ */ new Set();
-        state.pickerSkillMatches = skillMatches;
         state.screen = "skill-picker";
         render();
       } catch {
         await runTailor([]);
       }
     }
-    async function runTailor(additionalSkills, creditedSkills = []) {
+    async function runTailor(additionalSkills) {
       if (!state.user || !jobContext || !state.selectedResumeId) return;
       const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
       if (!resume) return;
@@ -20657,8 +20673,7 @@ ${suffix}`;
           ...sourceParams,
           jobDescription: jobContext.description,
           resumeFormat: state.resumeFormat,
-          additionalSkills,
-          creditedSkills
+          additionalSkills
         });
         await downloadBlob(tailorResult.pdfBlob, "tailored_resume.pdf");
         const saved = await uploadGeneratedResume(supabase, state.user.id, {
