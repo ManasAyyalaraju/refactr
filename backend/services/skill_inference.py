@@ -15,12 +15,15 @@ Two-step, both on the fast model tier:
    than a direct lookup table.
 """
 import json
+import logging
 from typing import List
 from pydantic import BaseModel
 from core.config import settings
 from models.resume_models import Resume
 from services.domain_prompts import get_domain_prompt, format_domain_guidance
 from services.llm_client import client, _extract_parsed
+
+logger = logging.getLogger(__name__)
 
 
 class _ResumeDomain(BaseModel):
@@ -214,6 +217,7 @@ PERSON'S BACKGROUND:
             "confidence": parsed.confidence or _FALLBACK_DOMAIN["confidence"],
         }
     except Exception:
+        logger.exception("classify_resume_domain failed, falling back to default domain")
         return dict(_FALLBACK_DOMAIN)
 
 
@@ -304,6 +308,7 @@ Rules:
         parsed = _extract_parsed(response.choices[0].message)
         return [s.strip() for s in parsed.skills if s.strip() and s.strip().lower() not in existing]
     except Exception:
+        logger.exception("_suggest_grounded_skills failed")
         return []
 
 
@@ -355,6 +360,7 @@ Rules:
         parsed = _extract_parsed(response.choices[0].message)
         return [s.strip() for s in parsed.skills if s.strip() and s.strip().lower() not in existing]
     except Exception:
+        logger.exception("_suggest_fallback_skills failed")
         return []
 
 
@@ -426,4 +432,13 @@ Rules:
                 results.append({"jd_skill": m.jd_skill, "matched_candidate_skills": matched})
         return results
     except Exception:
+        # Silently falling back to [] here means the caller's compatibility
+        # score quietly reverts to literal-match-only with zero trace of why
+        # (looks identical to "nothing matched") - log it so a transient
+        # OpenAI failure (rate limit, timeout, malformed response) is
+        # diagnosable instead of indistinguishable from a genuine no-match.
+        logger.exception(
+            "match_inferred_skills_to_jd failed (jd_skills=%d, candidate_skills=%d)",
+            len(jd_skills), len(candidate_skills),
+        )
         return []
