@@ -380,6 +380,15 @@ async def tailor_resume(
     # Preserve categorized technical skills exactly as parsed - never LLM-rewritten
     rewritten_resume.technical_skills = original_technical_skills
 
+    # Preserve additional_info (certifications, languages, memberships, etc.)
+    # exactly as parsed - factual credential/identity data, not something an
+    # LLM rewrite should regenerate. Also fixes a real bug: the LLM's
+    # structured-output reproduction of this field was unreliable - it would
+    # sometimes silently drop it (e.g. certifications vanishing from the
+    # rewritten resume), breaking downstream semantic-skill crediting that
+    # depends on it even though the source data was always there.
+    rewritten_resume.additional_info = resume.additional_info
+
     # Step 3a: lock experience metadata and bullet counts
     locked_experience = []
     for original, rewritten in zip(original_experience, rewritten_resume.experience):
