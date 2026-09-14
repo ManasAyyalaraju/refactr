@@ -23,17 +23,41 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Job Description"])
 
 
+def _parse_skill_array(raw: Optional[str]) -> list:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(parsed, list) and all(isinstance(s, str) for s in parsed):
+        return parsed
+    return []
+
+
 @router.post("/jd/parse")
-async def parse_jd(jd_text: str = Form(...), inferred_skills: Optional[str] = Form(None)):
+async def parse_jd(
+    jd_text: str = Form(...),
+    inferred_skills: Optional[str] = Form(None),
+    explicit_skills: Optional[str] = Form(None),
+):
     """
     Parse a job description's skills/domain without tailoring a resume
     against it. Returns {job_description, domain, skill_matches}.
 
     inferred_skills: optional JSON array string of a resume's inferred
-    skills - when given, also returns which of them concretely satisfy a
-    JD requirement phrased more broadly than the skill's own wording (e.g.
-    "hyperparameter tuning" satisfying "data modeling techniques"), on top
-    of whatever the frontend already finds via plain literal overlap.
+    (plausible-but-unlisted) skills. explicit_skills: optional JSON array
+    string of the resume's already-listed skills. When either is given,
+    both pools are combined into one candidate list for a single semantic
+    match against the JD's requirements - e.g. "hyperparameter tuning" (an
+    inferred skill) or "Power BI" (an explicit one) each satisfying "data
+    modeling techniques"/"business intelligence", requirements phrased more
+    broadly than any single skill's own wording. Matching both pools
+    together (rather than two separate calls) lets the caller tell which
+    JD requirements are already covered by what the candidate explicitly
+    has - those don't need an inferred-skill suggestion - and rank any
+    remaining inferred-skill candidates by how many still-uncovered
+    requirements each one would satisfy.
     """
     try:
         settings.validate_api_key()
@@ -44,14 +68,10 @@ async def parse_jd(jd_text: str = Form(...), inferred_skills: Optional[str] = Fo
         jd, domain_info = await parse_job_description_from_text(jd_text)
 
         skill_matches: list = []
-        if inferred_skills:
-            try:
-                parsed_inferred = json.loads(inferred_skills)
-            except json.JSONDecodeError:
-                parsed_inferred = None
-            if isinstance(parsed_inferred, list) and all(isinstance(s, str) for s in parsed_inferred):
-                jd_skill_list = (jd.must_have_skills or []) + (jd.nice_to_have_skills or [])
-                skill_matches = await match_inferred_skills_to_jd(jd_skill_list, parsed_inferred)
+        candidate_pool = _parse_skill_array(explicit_skills) + _parse_skill_array(inferred_skills)
+        if candidate_pool:
+            jd_skill_list = (jd.must_have_skills or []) + (jd.nice_to_have_skills or [])
+            skill_matches = await match_inferred_skills_to_jd(jd_skill_list, candidate_pool)
 
         return JSONResponse(content=jsonable_encoder({
             "job_description": jd,

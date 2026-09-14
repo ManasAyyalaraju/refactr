@@ -135,7 +135,6 @@ async def tailor_resume_from_pdf(
     output: str = Form("json"),
     resume_format: str = Form("regular"),
     additional_skills: Optional[str] = Form(None),
-    credited_skills: Optional[str] = Form(None),
 ):
     """
     Upload either:
@@ -148,14 +147,6 @@ async def tailor_resume_from_pdf(
     explicitly confirmed (e.g. from the inferred-skills picker) - merged
     into the resume's truthful skill pool before tailoring.
 
-    credited_skills: optional JSON array string of JD requirement phrases
-    (verbatim from the JD's must/nice-to-have lists) that the frontend
-    already determined are satisfied by the confirmed additional_skills, via
-    /api/jd/parse's skill_matches (computed there against the resume's full
-    inferred_skills pool, which gives the model more context to judge a
-    match confidently than re-deriving it here against only the smaller
-    confirmed subset would). Only affects the compatibility score/matched
-    list - never written onto the resume itself.
     Returns:
     - Tailored resume JSON
     """
@@ -187,17 +178,6 @@ async def tailor_resume_from_pdf(
                 raise ValueError("additional_skills must be a JSON array of strings")
         except (json.JSONDecodeError, ValueError):
             raise HTTPException(status_code=400, detail="Invalid additional_skills.")
-
-    parsed_credited_skills: List[str] = []
-    if credited_skills:
-        try:
-            parsed_credited_skills = json.loads(credited_skills)
-            if not isinstance(parsed_credited_skills, list) or not all(
-                isinstance(s, str) for s in parsed_credited_skills
-            ):
-                raise ValueError("credited_skills must be a JSON array of strings")
-        except (json.JSONDecodeError, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid credited_skills.")
 
     parsed_resume: Optional[Resume] = None
     if resume_json is not None:
@@ -271,38 +251,24 @@ async def tailor_resume_from_pdf(
         jd_data = jd.model_dump()
         compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data)
 
-        # If the frontend determined (via /api/jd/parse's skill_matches, run
-        # earlier against the resume's full inferred_skills pool) that some
-        # confirmed skills satisfy a JD requirement phrased more broadly than
-        # their own wording, credit those requirements here. Restricted to
-        # the JD's own verbatim requirement text and to requirements still
-        # missing after the exact-match pass, so a malformed/tampered value
-        # can't inflate the score - only affects the score/matched list, the
-        # broader wording itself is never written onto the resume.
-        if parsed_credited_skills:
-            still_missing = set(compatibility["missing_must_have"] + compatibility["missing_nice_to_have"])
-            all_jd_skills = set((jd.must_have_skills or []) + (jd.nice_to_have_skills or []))
-            credited = [s for s in parsed_credited_skills if s in still_missing and s in all_jd_skills]
+        # Semantic credit pass: literal matching above only catches a JD
+        # requirement worded identically to a resume skill. Requirements
+        # phrased more broadly than any single skill's own wording (e.g.
+        # "business intelligence" satisfied by an already-listed "Power BI",
+        # or "data modeling techniques" satisfied by a confirmed
+        # "hyperparameter tuning") need an LLM judgment call instead. Runs
+        # unconditionally against the resume's final skill list (explicit +
+        # any confirmed additional_skills, already merged in above) so a
+        # resume with no inferred-skills picker interaction still gets full
+        # credit for what it already explicitly lists - not just resumes
+        # that happened to go through the picker.
+        still_missing = compatibility["missing_must_have"] + compatibility["missing_nice_to_have"]
+        if still_missing:
+            with timed_stage("credit_semantic_skills", timings):
+                matches = await match_inferred_skills_to_jd(still_missing, tailored_resume.skills or [])
+            credited = [m["jd_skill"] for m in matches]
             if credited:
                 compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
-
-        # A second, server-side pass: the frontend's credited_skills above
-        # only ever considered the resume's *inferred* skills (computed at
-        # picker time) as evidence - it has no way to know whether a JD
-        # requirement is actually satisfied by a skill the candidate already
-        # had explicitly listed (e.g. "business intelligence" satisfied by an
-        # already-listed "Power BI"/"Tableau", not anything from the picker).
-        # Only runs when the picker was actually used (same cost/latency
-        # footprint as the pass above, not added to every tailor request),
-        # using the full final skill list (explicit + confirmed) as context.
-        if parsed_additional_skills:
-            still_missing = compatibility["missing_must_have"] + compatibility["missing_nice_to_have"]
-            if still_missing:
-                with timed_stage("credit_explicit_skills", timings):
-                    matches = await match_inferred_skills_to_jd(still_missing, tailored_resume.skills or [])
-                credited = [m["jd_skill"] for m in matches]
-                if credited:
-                    compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
 
         timings_header = json.dumps(timings)
 

@@ -25,11 +25,6 @@ export interface TailorResumeParams {
   // Skills the candidate explicitly confirmed (from the inferred-skills
   // picker) - merged into the resume's truthful skill pool before tailoring.
   additionalSkills?: string[];
-  // JD requirement phrases (verbatim) that parseJobDescription's
-  // skill_matches determined are satisfied by the confirmed additionalSkills
-  // - credits the compatibility score/matched-list without writing the
-  // broader wording onto the resume itself.
-  creditedSkills?: string[];
 }
 
 function resolveFileName(pdfFile: File | Blob, fileName?: string): string {
@@ -72,7 +67,6 @@ export async function tailorResume({
   outputFormat = 'json',
   resumeFormat = 'regular',
   additionalSkills,
-  creditedSkills,
 }: TailorResumeParams): Promise<TailorResumeResponse> {
   try {
     const formData = new FormData();
@@ -88,9 +82,6 @@ export async function tailorResume({
     formData.append('resume_format', resumeFormat);
     if (additionalSkills && additionalSkills.length > 0) {
       formData.append('additional_skills', JSON.stringify(additionalSkills));
-    }
-    if (creditedSkills && creditedSkills.length > 0) {
-      formData.append('credited_skills', JSON.stringify(creditedSkills));
     }
 
     const response = await apiClient.post('/api/tailor/pdf', formData, {
@@ -199,24 +190,32 @@ export interface ParseJobDescriptionResponse {
 
 /**
  * Parse a job description's skills/domain without tailoring a resume
- * against it (Phase 4) - used to compute overlap with a resume's
- * inferred_skills for the skill-suggestion picker.
+ * against it (Phase 4) - used to compute overlap with a resume's skills for
+ * the skill-suggestion picker.
  *
- * inferredSkills: a resume's inferred_skills - when given, the backend also
- * returns skill_matches: concrete inferred skills that satisfy a JD
- * requirement phrased more broadly than the skill's own wording (e.g.
- * "hyperparameter tuning" satisfying "data modeling techniques"), on top of
- * whatever plain literal-string overlap already finds.
+ * inferredSkills/explicitSkills: a resume's inferred (plausible-but-unlisted)
+ * and already-listed skills. When either is given, the backend combines both
+ * into one candidate pool and returns skill_matches: which of them satisfy a
+ * JD requirement phrased more broadly than any single skill's own wording
+ * (e.g. "hyperparameter tuning" or "Power BI" each satisfying "data modeling
+ * techniques"/"business intelligence"), on top of whatever plain
+ * literal-string overlap already finds. Matching both pools together (one
+ * call) lets the caller tell which JD requirements are already covered by
+ * explicit skills - those don't need an inferred-skill suggestion.
  */
 export async function parseJobDescription(
   jdText: string,
-  inferredSkills?: string[]
+  inferredSkills?: string[],
+  explicitSkills?: string[]
 ): Promise<ParseJobDescriptionResponse> {
   try {
     const formData = new FormData();
     formData.append('jd_text', jdText);
     if (inferredSkills && inferredSkills.length > 0) {
       formData.append('inferred_skills', JSON.stringify(inferredSkills));
+    }
+    if (explicitSkills && explicitSkills.length > 0) {
+      formData.append('explicit_skills', JSON.stringify(explicitSkills));
     }
 
     const response = await apiClient.post('/api/jd/parse', formData);

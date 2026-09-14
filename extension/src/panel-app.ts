@@ -1,7 +1,7 @@
 import type { User } from '@supabase/supabase-js';
 import { getSupabaseClient } from './lib/supabase-client';
 import { listBaseResumes, downloadBaseResume, uploadGeneratedResume, type BaseResumeRow } from './lib/resumes';
-import { tailorResumePdf, parseJobDescription, type SkillMatch } from './lib/api';
+import { tailorResumePdf, parseJobDescription } from './lib/api';
 import { blobToDataUrl } from './lib/data-url';
 import type { JobContext } from './lib/extract-jd';
 import { WEB_APP_URL } from './lib/config';
@@ -34,7 +34,6 @@ interface State {
   lastResultId: string | null;
   pickerSkills: string[];
   selectedSkills: Set<string>;
-  pickerSkillMatches: SkillMatch[];
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -55,7 +54,6 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     lastResultId: null,
     pickerSkills: [],
     selectedSkills: new Set(),
-    pickerSkillMatches: [],
   };
 
   function render() {
@@ -237,7 +235,6 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       state.lastResultId = null;
       state.pickerSkills = [];
       state.selectedSkills = new Set();
-      state.pickerSkillMatches = [];
       state.screen = 'picker';
       render();
     });
@@ -270,16 +267,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     });
     container.querySelector('[data-action="confirm-skills"]')?.addEventListener('click', () => {
       const chosen = state.pickerSkills.filter((s) => state.selectedSkills.has(s));
-      // Credit a JD requirement (e.g. "data modeling techniques") if at
-      // least one of the skills that satisfy it was actually confirmed -
-      // computed from the full-pool matches already found by the earlier
-      // overlap check, not re-derived against just the confirmed subset (a
-      // smaller pool makes the match-judgment markedly less reliable).
-      const chosenLower = new Set(chosen.map((s) => s.toLowerCase()));
-      const credited = state.pickerSkillMatches
-        .filter((m) => m.matched_candidate_skills.some((s) => chosenLower.has(s.toLowerCase())))
-        .map((m) => m.jd_skill);
-      runTailor(chosen, credited);
+      runTailor(chosen);
     });
   }
 
@@ -355,42 +343,64 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     render();
 
     try {
+      const explicitSkills = (resume.parsed_data?.skills as string[] | undefined) ?? [];
       const { jobDescription: jd, skillMatches } = await parseJobDescription(
         jobContext.description,
-        resume.inferred_skills
+        resume.inferred_skills,
+        explicitSkills
       );
-      const explicitLower = new Set(
-        ((resume.parsed_data?.skills as string[] | undefined) ?? []).map((s) => s.toLowerCase())
-      );
-
-      // Plain literal overlap (e.g. JD says "Docker", inferred_skills has "Docker").
+      const explicitLower = new Set(explicitSkills.map((s) => s.toLowerCase()));
+      const mustHaveLower = new Set((jd.must_have_skills ?? []).map((s) => s.toLowerCase()));
       const jdSkillsLower = new Set(
         [...(jd.must_have_skills ?? []), ...(jd.nice_to_have_skills ?? [])].map((s) => s.toLowerCase())
       );
-      const literalOverlap = resume.inferred_skills.filter(
-        (s) => jdSkillsLower.has(s.toLowerCase()) && !explicitLower.has(s.toLowerCase())
-      );
 
-      // Semantic overlap (e.g. JD says "data modeling techniques", candidate
-      // has "hyperparameter tuning") - a JD requirement phrased more broadly
-      // than any single skill's own wording, which literal matching can't catch.
-      const semanticOverlap = skillMatches
-        .flatMap((m) => m.matched_candidate_skills)
-        .filter((s) => !explicitLower.has(s.toLowerCase()));
+      // A JD requirement already satisfied by an explicit skill (literally,
+      // or via the same semantic match call) doesn't need an inferred-skill
+      // suggestion - confirming one wouldn't move the score, since it's
+      // credited server-side automatically either way.
+      const coveredByExplicit = new Set<string>();
+      for (const skill of explicitSkills) {
+        if (jdSkillsLower.has(skill.toLowerCase())) coveredByExplicit.add(skill.toLowerCase());
+      }
+      for (const m of skillMatches) {
+        if (m.matched_candidate_skills.some((s) => explicitLower.has(s.toLowerCase()))) {
+          coveredByExplicit.add(m.jd_skill.toLowerCase());
+        }
+      }
 
-      const overlap = Array.from(new Set([...literalOverlap, ...semanticOverlap]));
+      // Rank remaining ("gap") candidates by how many uncovered requirements
+      // each would satisfy, weighting must-have above nice-to-have.
+      const impact = new Map<string, number>();
+      const bump = (skill: string, weight: number) => impact.set(skill, (impact.get(skill) ?? 0) + weight);
 
-      if (overlap.length === 0) {
+      for (const skill of resume.inferred_skills) {
+        const lower = skill.toLowerCase();
+        if (jdSkillsLower.has(lower) && !coveredByExplicit.has(lower)) {
+          bump(skill, mustHaveLower.has(lower) ? 2 : 1);
+        }
+      }
+      for (const m of skillMatches) {
+        const lower = m.jd_skill.toLowerCase();
+        if (coveredByExplicit.has(lower)) continue;
+        const weight = mustHaveLower.has(lower) ? 2 : 1;
+        for (const s of m.matched_candidate_skills) {
+          if (!explicitLower.has(s.toLowerCase())) bump(s, weight);
+        }
+      }
+
+      if (impact.size === 0) {
         await runTailor([]);
         return;
       }
+
+      const overlap = Array.from(impact.keys()).sort((a, b) => impact.get(b)! - impact.get(a)!);
 
       state.pickerSkills = overlap;
       // Unchecked by default - require an active, deliberate confirmation
       // per skill rather than pre-selecting everything and asking the user
       // to opt out (which led to over-inclusion/clutter in testing).
       state.selectedSkills = new Set();
-      state.pickerSkillMatches = skillMatches;
       state.screen = 'skill-picker';
       render();
     } catch {
@@ -399,7 +409,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     }
   }
 
-  async function runTailor(additionalSkills: string[], creditedSkills: string[] = []) {
+  async function runTailor(additionalSkills: string[]) {
     if (!state.user || !jobContext || !state.selectedResumeId) return;
 
     const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
@@ -425,7 +435,6 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
         jobDescription: jobContext.description,
         resumeFormat: state.resumeFormat,
         additionalSkills,
-        creditedSkills,
       });
 
       await downloadBlob(tailorResult.pdfBlob, 'tailored_resume.pdf');
