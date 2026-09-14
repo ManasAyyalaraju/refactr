@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     openai_model_fast: str = "gpt-4o-mini"
     openai_model_generate: str = "gpt-4o-mini"
 
+    # match_inferred_skills_to_jd runs on every tailor request (unconditional
+    # semantic-credit pass) and needs to reliably catch subtler inferential
+    # matches (e.g. Photoshop/Illustrator satisfying "Adobe CC") in a mixed
+    # list of easy and hard requirements - verified gpt-4o-mini misses these
+    # deterministically at temperature 0 while gpt-4.1-mini catches them
+    # reliably, so this call gets its own tier rather than sharing
+    # openai_model_fast with less accuracy-sensitive calls (domain
+    # classification, inferred-skill suggestion).
+    openai_model_matching: str = "gpt-4.1-mini"
+
     # Passed straight to AsyncOpenAI's built-in retry/backoff for transient
     # errors (rate limits, timeouts) - no separate retry library needed.
     openai_max_retries: int = 2

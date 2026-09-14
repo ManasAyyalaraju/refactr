@@ -406,6 +406,10 @@ genuine instance or application of that requirement - not just loosely related. 
 "hyperparameter tuning" and "cross-validation" are concrete instances of "data modeling
 techniques". "Python" is a concrete instance of "high level programming languages".
 
+Evaluate every single job requirement above independently, one at a time, in order - do not
+let earlier or later requirements in the list draw attention away from any one of them.
+Accuracy on requirement 5 of 6 matters exactly as much as requirement 1 of 6.
+
 Rules:
 - Only include a job requirement if at least one candidate skill genuinely, concretely
   satisfies it - skip anything uncertain, loosely associative, or a stretch.
@@ -418,7 +422,7 @@ Rules:
 """
     try:
         response = await client.chat.completions.parse(
-            model=settings.openai_model_fast,
+            model=settings.openai_model_matching,
             messages=[{"role": "user", "content": prompt}],
             response_format=_SkillMatches,
             temperature=0,
