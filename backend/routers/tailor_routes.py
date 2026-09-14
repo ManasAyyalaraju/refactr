@@ -242,8 +242,13 @@ async def tailor_resume_from_pdf(
         # a resume with no additional_info skills line at all (the template
         # falls back to rendering resume.skills directly in that case).
         if parsed_additional_skills and resume.additional_info:
+            # Truthy check, not `is not None` - additional_info.computer_skills/
+            # technical_skills can be an empty string rather than None for a
+            # resume with no such line, and appending onto "" produced a
+            # leading ", " artifact ("Technical Skills: , Information
+            # Architecture, ...") on the rendered PDF.
             existing_line = resume.additional_info.computer_skills or resume.additional_info.technical_skills
-            if existing_line is not None:
+            if existing_line:
                 existing_lower = {_normalize_skill(s) for s in _parse_skill_line(existing_line)}
                 new_items = [s for s in parsed_additional_skills if _normalize_skill(s) not in existing_lower]
                 if new_items:
