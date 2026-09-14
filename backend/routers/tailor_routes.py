@@ -284,8 +284,16 @@ async def tailor_resume_from_pdf(
         # that happened to go through the picker.
         still_missing = compatibility["missing_must_have"] + compatibility["missing_nice_to_have"]
         if still_missing:
+            # Certifications (e.g. "Adobe Certified Professional") live in a
+            # separate field from resume.skills and are just as legitimate
+            # evidence for a JD requirement (e.g. "Adobe CC") - included here
+            # for scoring only, same as everything else in this pass; never
+            # merged into resume.skills or written onto the resume itself.
+            candidate_skills = list(tailored_resume.skills or [])
+            if tailored_resume.additional_info and tailored_resume.additional_info.certifications:
+                candidate_skills += tailored_resume.additional_info.certifications
             with timed_stage("credit_semantic_skills", timings):
-                matches = await match_inferred_skills_to_jd(still_missing, tailored_resume.skills or [])
+                matches = await match_inferred_skills_to_jd(still_missing, candidate_skills)
             credited = [m["jd_skill"] for m in matches]
             if credited:
                 compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)

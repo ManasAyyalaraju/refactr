@@ -91,7 +91,14 @@ function TailorPageInner() {
 
     setError('');
     setIsCheckingOverlap(true);
-    const explicitSkills = selectedResume.parsed_data?.skills ?? [];
+    // Certifications are just as legitimate evidence for a JD requirement
+    // (e.g. "Adobe Certified Professional" satisfying "Adobe CC") as an
+    // explicit skill - bundled in here so they're treated the same way
+    // throughout: covering a requirement without needing a picker suggestion.
+    const explicitSkills = [
+      ...(selectedResume.parsed_data?.skills ?? []),
+      ...(selectedResume.parsed_data?.additional_info?.certifications ?? []),
+    ];
     const jdResponse = await parseJobDescription(jobDescription, selectedResume.inferred_skills, explicitSkills);
     setIsCheckingOverlap(false);
 

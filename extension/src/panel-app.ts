@@ -343,7 +343,17 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     render();
 
     try {
-      const explicitSkills = (resume.parsed_data?.skills as string[] | undefined) ?? [];
+      // Certifications are just as legitimate evidence for a JD requirement
+      // (e.g. "Adobe Certified Professional" satisfying "Adobe CC") as an
+      // explicit skill - bundled in here so they're treated the same way
+      // throughout: covering a requirement without needing a picker suggestion.
+      const additionalInfo = resume.parsed_data?.additional_info as
+        | { certifications?: string[] }
+        | undefined;
+      const explicitSkills = [
+        ...((resume.parsed_data?.skills as string[] | undefined) ?? []),
+        ...(additionalInfo?.certifications ?? []),
+      ];
       const { jobDescription: jd, skillMatches } = await parseJobDescription(
         jobContext.description,
         resume.inferred_skills,

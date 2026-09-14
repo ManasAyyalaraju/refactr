@@ -102,6 +102,8 @@ def _existing_skill_set(resume: Resume) -> set:
     existing = {s.strip().lower() for s in resume.skills}
     for cat in resume.technical_skills:
         existing.update(i.strip().lower() for i in cat.items)
+    if resume.additional_info and resume.additional_info.certifications:
+        existing.update(c.strip().lower() for c in resume.additional_info.certifications)
     return existing
 
 
