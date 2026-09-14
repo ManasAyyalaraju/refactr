@@ -44,6 +44,25 @@ class _SkillMatches(BaseModel):
 
 _FALLBACK_DOMAIN = {"industry": "General / Hybrid", "sub_domain": "General Business", "confidence": "low"}
 
+# Shared across both suggestion passes so every inferred skill reads as one
+# consistent style, instead of each entry free-forming its own format (e.g.
+# "DCF (Discounted Cash Flow) modeling" next to "Financial statement
+# analysis" next to "Financial reporting standards (GAAP/IFRS)" - three
+# different conventions for essentially the same kind of entry).
+_FORMATTING_RULES = """FORMATTING (apply to every suggestion, no exceptions):
+- Title Case, short noun phrase (2-5 words) - exactly how it would read on a resume's
+  own skills line.
+- Never use a parenthetical to spell out, define, or exemplify a term - each suggestion
+  is either the acronym/short name OR the full name, never both. Pick whichever a
+  practitioner would actually write on their own resume:
+  - Well-known acronym alone: "DCF Modeling", "LBO Modeling", "M&A Analysis", "SWOT
+    Analysis", "PEST Analysis" - NOT "DCF (Discounted Cash Flow) Modeling".
+  - Full name alone when there's no standard short form: "Comparable Company Analysis",
+    "Financial Statement Analysis".
+  - A specific named tool/certification is not an acronym to expand: "Excel", "AWS
+    Certified Cloud Practitioner".
+"""
+
 
 def _resume_background_text(resume: Resume) -> str:
     """Condense a resume's headline/summary/education/titles/companies/
@@ -270,6 +289,8 @@ Rules:
   general field.
 - If you can't confidently suggest 15 things grounded in their actual background, return
   fewer rather than padding the list with weaker guesses.
+
+{_FORMATTING_RULES}
 """
     try:
         response = await client.chat.completions.parse(
@@ -319,6 +340,8 @@ Rules:
   vague category (e.g. "Programming languages", "Certifications").
 - If you genuinely cannot ground even 3 suggestions in their background, return fewer -
   do not pad with generic guesses just to reach the minimum.
+
+{_FORMATTING_RULES}
 """
     try:
         response = await client.chat.completions.parse(
