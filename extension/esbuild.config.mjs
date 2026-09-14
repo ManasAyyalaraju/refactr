@@ -52,7 +52,7 @@ if (!prod) {
   manifest.name = `${manifest.name} (Local Dev)`;
   manifest.version_name = `${manifest.version} (Local Dev)`;
 }
-writeFileSync(join(__dirname, 'dist', 'manifest.json'), JSON.stringify(manifest, null, 2));
+writeFileSync(join(__dirname, 'dist', 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 cpSync(join(__dirname, 'src', 'popup.html'), join(__dirname, 'dist', 'popup.html'));
 cpSync(join(__dirname, 'src', 'panel.css'), join(__dirname, 'dist', 'panel.css'));
 cpSync(join(__dirname, 'icons'), join(__dirname, 'dist', 'icons'), { recursive: true });
