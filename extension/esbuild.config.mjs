@@ -24,11 +24,13 @@ const buildOptions = {
   target: 'chrome116',
   sourcemap: true,
   logLevel: 'info',
-  // config.ts's API_BASE_URL defaults to localhost for `npm run build`/`watch`
-  // (local dev, loaded unpacked from dist/); `npm run build:prod` overrides it
-  // to the deployed backend for the build that gets pushed to extension-release.
+  // config.ts's API_BASE_URL/WEB_APP_URL default to localhost for `npm run
+  // build`/`watch` (local dev, loaded unpacked from dist/); `npm run
+  // build:prod` overrides both to the deployed URLs for the build that gets
+  // pushed to extension-release.
   define: {
     'process.env.API_BASE_URL': JSON.stringify(prod ? 'https://api.refactrapp.com' : ''),
+    'process.env.WEB_APP_URL': JSON.stringify(prod ? 'https://www.refactrapp.com' : ''),
   },
 };
 
