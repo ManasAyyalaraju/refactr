@@ -20605,7 +20605,11 @@ ${suffix}`;
       state.screen = "checking-skills";
       render();
       try {
-        const explicitSkills = resume.parsed_data?.skills ?? [];
+        const additionalInfo = resume.parsed_data?.additional_info;
+        const explicitSkills = [
+          ...resume.parsed_data?.skills ?? [],
+          ...additionalInfo?.certifications ?? []
+        ];
         const { jobDescription: jd, skillMatches } = await parseJobDescription(
           jobContext.description,
           resume.inferred_skills,
