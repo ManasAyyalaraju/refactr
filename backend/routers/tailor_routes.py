@@ -233,6 +233,26 @@ async def tailor_resume_from_pdf(
             resume.skills or [], line_skills, category_skills, parsed_additional_skills
         )
 
+        # The Regular template's Additional Info section renders
+        # additional_info.computer_skills/technical_skills as a raw string
+        # directly - not resume.skills - so a confirmed picker skill that's
+        # only reflected in resume.skills never actually shows up in the
+        # rendered PDF. Append any newly-confirmed skills onto whichever raw
+        # line the resume originally had, so the two stay in sync. No-op for
+        # a resume with no additional_info skills line at all (the template
+        # falls back to rendering resume.skills directly in that case).
+        if parsed_additional_skills and resume.additional_info:
+            existing_line = resume.additional_info.computer_skills or resume.additional_info.technical_skills
+            if existing_line is not None:
+                existing_lower = {_normalize_skill(s) for s in _parse_skill_line(existing_line)}
+                new_items = [s for s in parsed_additional_skills if _normalize_skill(s) not in existing_lower]
+                if new_items:
+                    appended = existing_line.rstrip().rstrip(",") + ", " + ", ".join(new_items)
+                    if resume.additional_info.computer_skills:
+                        resume.additional_info.computer_skills = appended
+                    else:
+                        resume.additional_info.technical_skills = appended
+
         # Categorize skills into TECHNICAL SKILLS *before* tailoring so the
         # compact-mode/spacing decision (computed inside tailor_resume) knows
         # about the section that's about to be added - otherwise a resume
