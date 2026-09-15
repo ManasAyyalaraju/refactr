@@ -20480,6 +20480,14 @@ ${suffix}`;
   // src/panel-app.ts
   var POLL_INTERVAL_MS = 1500;
   var POLL_TIMEOUT_MS = 3 * 60 * 1e3;
+  function sanitizeFilenamePart(value) {
+    return value.replace(/[\\/:*?"<>|]/g, "").trim();
+  }
+  function buildTailoredResumeFilename(job) {
+    const parts = [job?.company, job?.title].filter((v) => Boolean(v && v.trim())).map(sanitizeFilenamePart).filter(Boolean);
+    if (parts.length === 0) return "Tailored Resume.pdf";
+    return `${[...parts, "Resume"].join(" - ")}.pdf`;
+  }
   function mountPanelApp({ container, jobContext, onClose }) {
     const supabase = getSupabaseClient();
     let pollHandle2 = null;
@@ -20816,7 +20824,7 @@ ${suffix}`;
           resumeFormat: state.resumeFormat,
           additionalSkills
         });
-        await downloadBlob(tailorResult.pdfBlob, "tailored_resume.pdf");
+        await downloadBlob(tailorResult.pdfBlob, buildTailoredResumeFilename(jobContext));
         const saved = await uploadGeneratedResume(supabase, state.user.id, {
           baseResumeId: resume.id,
           pdfBlob: tailorResult.pdfBlob,
