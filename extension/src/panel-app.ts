@@ -39,6 +39,23 @@ interface State {
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
 
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '').trim();
+}
+
+// "Company - Job Title - Resume.pdf" instead of a generic name, so tailoring
+// against multiple jobs produces downloads you can tell apart - mirrors the
+// web app's buildTailoredResumeFilename in TailoredResultView.tsx.
+function buildTailoredResumeFilename(job: JobContext | null): string {
+  const parts = [job?.company, job?.title]
+    .filter((v): v is string => Boolean(v && v.trim()))
+    .map(sanitizeFilenamePart)
+    .filter(Boolean);
+
+  if (parts.length === 0) return 'Tailored Resume.pdf';
+  return `${[...parts, 'Resume'].join(' - ')}.pdf`;
+}
+
 export function mountPanelApp({ container, jobContext, onClose }: PanelAppOptions): void {
   const supabase = getSupabaseClient();
   let pollHandle: ReturnType<typeof setInterval> | null = null;
@@ -447,7 +464,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
         additionalSkills,
       });
 
-      await downloadBlob(tailorResult.pdfBlob, 'tailored_resume.pdf');
+      await downloadBlob(tailorResult.pdfBlob, buildTailoredResumeFilename(jobContext));
 
       const saved = await uploadGeneratedResume(supabase, state.user.id, {
         baseResumeId: resume.id,

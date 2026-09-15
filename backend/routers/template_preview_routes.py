@@ -16,12 +16,15 @@ router = APIRouter(tags=["Template Preview"])
 
 # Static example resume used purely to demonstrate what the Regular vs
 # Technical templates look like. No AI call, no user data involved.
+# Identity fields are deliberately generic placeholders (not a real-sounding
+# name) so users previewing this alongside their own upload don't mistake it
+# for their resume and worry they uploaded the wrong file.
 DUMMY_RESUME = Resume(
-    name="Jordan Smith",
+    name="Your Name",
     contact=Contact(
-        email="jordan.smith@example.com",
+        email="your.email@example.com",
         phone="(555) 123-4567",
-        linkedin="linkedin.com/in/jordansmith",
+        linkedin="linkedin.com/in/yourname",
         location="Austin, TX",
     ),
     education=[

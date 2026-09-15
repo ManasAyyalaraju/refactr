@@ -7,6 +7,7 @@ import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import TailoredResultView from '@/components/TailoredResultView';
+import PdfPreview from '@/components/PdfPreview';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { getGeneratedResume, downloadGeneratedResume, GeneratedResumeRow } from '@/lib/supabase/resumes';
@@ -113,11 +114,7 @@ export default function TailoredResumeDetailPage({ params }: { params: Promise<{
 
             <div className="bg-[#fffcfc] border border-black rounded overflow-hidden">
               {pdfUrl ? (
-                <iframe
-                  src={`${pdfUrl}#view=FitH&toolbar=0&navpanes=0&scrollbar=1`}
-                  className="w-full h-[850px] border-0"
-                  title="Resume PDF Preview"
-                />
+                <PdfPreview url={pdfUrl} mode="scroll" className="w-full h-[850px]" />
               ) : (
                 <p className="text-center text-black/40 text-[14px] py-20">Couldn&apos;t load the PDF preview.</p>
               )}

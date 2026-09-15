@@ -266,7 +266,7 @@ async def tailor_resume_from_pdf(
         use_technical_skills = resume_format.lower() == "technical" and output.lower() == "pdf"
         if use_technical_skills:
             with timed_stage("categorize_skills", timings):
-                resume = await ensure_technical_skills(resume)
+                resume = await ensure_technical_skills(resume, allow_recategorize=True)
 
         # 3) Tailor
         with timed_stage("tailor", timings):

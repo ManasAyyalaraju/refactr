@@ -223,6 +223,33 @@ export async function listBaseResumes(
   return data ?? [];
 }
 
+/**
+ * Testing-tool-only helper (see the Profile page's "Developer / Testing
+ * Tools" section) - permanently deletes a base resume: its storage object
+ * and its base_resumes row. Not exposed as a real product feature.
+ * generated_resumes.base_resume_id is ON DELETE SET NULL, so any tailored
+ * history linked to this resume survives with base_resume_id cleared rather
+ * than being deleted or blocking this call.
+ */
+export async function deleteBaseResume(
+  supabase: SupabaseClient,
+  resumeId: string,
+  storagePath: string
+): Promise<boolean> {
+  try {
+    const { error: storageError } = await supabase.storage.from('base-resumes').remove([storagePath]);
+    if (storageError) throw storageError;
+
+    const { error: deleteError } = await supabase.from('base_resumes').delete().eq('id', resumeId);
+    if (deleteError) throw deleteError;
+
+    return true;
+  } catch (err) {
+    console.error('deleteBaseResume failed:', err);
+    return false;
+  }
+}
+
 export async function downloadBaseResume(
   supabase: SupabaseClient,
   storagePath: string

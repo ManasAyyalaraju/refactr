@@ -110,3 +110,4 @@ class Resume(BaseModel):
     # Formatting control
     compact_mode: bool = False  # If True, use minimal spacing to fit on one page
     ultra_compact_mode: bool = False  # If True, also nudge the font size down slightly - set automatically by render_resume_pdf when compact spacing alone isn't enough to fit one page
+    roomy_mode: bool = False  # If True, use looser-than-default spacing - set automatically by render_resume_pdf when a one-page render still leaves the page visibly underfull

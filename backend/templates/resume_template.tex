@@ -40,7 +40,11 @@
 % Set spacing
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0pt}
+%{ if resume.roomy_mode %}
+\setlist[itemize]{leftmargin=14pt, itemsep=2pt, parsep=1pt, topsep=0pt}
+%{ else %}
 \setlist[itemize]{leftmargin=14pt, itemsep=0pt, parsep=0pt, topsep=0pt}
+%{ endif %}
 
 % Section formatting
 \titleformat{\section}
@@ -50,13 +54,25 @@
   {}
   [\titlerule]
 
-% Dynamic spacing variables based on compact mode
+% Dynamic spacing variables based on content density. compact_mode (set
+% ahead of render, from bullet/section counts) tightens spacing for dense
+% resumes; roomy_mode (set by render_resume_pdf AFTER measuring that a
+% one-page render still leaves the page visibly underfull) loosens it
+% instead, one step past the default - so a short resume's page doesn't end
+% in a blank void well before the bottom margin. Mutually exclusive - see
+% render_resume_pdf's tier-stepping logic.
 %{ if resume.compact_mode %}
 \titlespacing*{\section}{0pt}{5pt}{1pt}
 \newcommand{\entryvspace}{\vspace{1pt}}
 \newcommand{\sectionvspace}{\vspace{3pt}}
 \newcommand{\headervspace}{\vspace{-8pt}}
 \newcommand{\contactvspace}{\vspace{2pt}}
+%{ elif resume.roomy_mode %}
+\titlespacing*{\section}{0pt}{18pt}{5pt}
+\newcommand{\entryvspace}{\vspace{11pt}}
+\newcommand{\sectionvspace}{\vspace{11pt}}
+\newcommand{\headervspace}{\vspace{2pt}}
+\newcommand{\contactvspace}{\vspace{9pt}}
 %{ else %}
 \titlespacing*{\section}{0pt}{10pt}{2pt}
 \newcommand{\entryvspace}{\vspace{5pt}}
@@ -229,7 +245,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.experience %}
 \section*{EXPERIENCE}
 %{ for exp in resume.experience %}
-\resumeSubheading{VAR{exp.company|escape_latex}}{VAR{exp.title|escape_latex}}{%{ if exp.start_date %}VAR{exp.start_date|escape_latex}%{ endif %}}{%{ if exp.end_date %}VAR{exp.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{exp.company|escape_latex}%{ if exp.location %}, VAR{exp.location|escape_latex}%{ endif %}}{VAR{exp.title|escape_latex}}{%{ if exp.start_date %}VAR{exp.start_date|escape_latex}%{ endif %}}{%{ if exp.end_date %}VAR{exp.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if exp.bullets %}
 \begin{itemize}
 %{ for bullet in exp.bullets %}
@@ -265,7 +281,7 @@ VAR{resume.summary|escape_latex}
   %{ if not is_minor_leadership %}
 \section*{LEADERSHIP}
 %{ for lead in resume.leadership %}
-\resumeSubheading{VAR{lead.organization|escape_latex}}{%{ if lead.role %}VAR{lead.role|escape_latex}%{ endif %}}{%{ if lead.start_date %}VAR{lead.start_date|escape_latex}%{ endif %}}{%{ if lead.end_date %}VAR{lead.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{lead.organization|escape_latex}%{ if lead.location %}, VAR{lead.location|escape_latex}%{ endif %}}{%{ if lead.role %}VAR{lead.role|escape_latex}%{ endif %}}{%{ if lead.start_date %}VAR{lead.start_date|escape_latex}%{ endif %}}{%{ if lead.end_date %}VAR{lead.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if lead.bullets %}
 \begin{itemize}
 %{ for bullet in lead.bullets %}
@@ -284,7 +300,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.volunteer_work %}
 \section*{VOLUNTEER WORK}
 %{ for vol in resume.volunteer_work %}
-\resumeSubheading{VAR{vol.organization|escape_latex}}{%{ if vol.role %}VAR{vol.role|escape_latex}%{ endif %}}{%{ if vol.start_date %}VAR{vol.start_date|escape_latex}%{ endif %}}{%{ if vol.end_date %}VAR{vol.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{vol.organization|escape_latex}%{ if vol.location %}, VAR{vol.location|escape_latex}%{ endif %}}{%{ if vol.role %}VAR{vol.role|escape_latex}%{ endif %}}{%{ if vol.start_date %}VAR{vol.start_date|escape_latex}%{ endif %}}{%{ if vol.end_date %}VAR{vol.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if vol.bullets %}
 \begin{itemize}
 %{ for bullet in vol.bullets %}
@@ -338,47 +354,54 @@ VAR{resume.summary|escape_latex}
 %{ endif %}
 
 % Additional Information
-%{ if resume.additional_info or (resume.skills and not resume.technical_skills) or resume.leadership %}
+%# Precompute exactly what this section would render, once, so the section
+%# header's own guard can never disagree with what actually ends up on the
+%# page below it - the previous guard (resume.additional_info or ... or
+%# resume.leadership) was true whenever those objects merely EXISTED, not
+%# when they had anything to show (e.g. any resume.leadership truthied the
+%# header even though only the "exactly 1 entry, <=1 bullet" case ever
+%# renders anything from it) - printing a bare "ADDITIONAL INFORMATION"
+%# header followed by nothing.
+%{ set show_skills_line = (not resume.technical_skills) and (resume.additional_info.computer_skills or resume.additional_info.technical_skills or resume.skills) %}
+%{ set show_certifications = resume.additional_info and resume.additional_info.certifications %}
+%{ set show_languages = resume.additional_info and resume.additional_info.languages %}
+%{ set show_memberships = resume.additional_info and resume.additional_info.professional_memberships %}
+%{ set show_minor_leadership = resume.leadership and (resume.leadership|length == 1 and resume.leadership[0].bullets|length <= 1) %}
+%{ set show_work_eligibility = resume.additional_info and resume.additional_info.work_eligibility %}
+%{ set show_other = resume.additional_info and resume.additional_info.other %}
+%{ set show_additional_info = show_skills_line or show_certifications or show_languages or show_memberships or show_minor_leadership or show_work_eligibility or show_other %}
+
+%{ if show_additional_info %}
 \section*{ADDITIONAL INFORMATION}
 
-%{ if not resume.technical_skills %}
-  %{ if resume.additional_info %}
-    %{ if resume.additional_info.computer_skills %}
+%{ if show_skills_line %}
+  %{ if resume.additional_info.computer_skills %}
 \noindent\textbf{Computer Skills:} VAR{resume.additional_info.computer_skills|escape_latex}
-    %{ elif resume.additional_info.technical_skills %}
+  %{ elif resume.additional_info.technical_skills %}
 \noindent\textbf{Technical Skills:} VAR{resume.additional_info.technical_skills|escape_latex}
-    %{ elif resume.skills %}
-\noindent\textbf{Skills:} %{ for skill in resume.skills %}VAR{skill|escape_latex}%{ if not loop.last %} $|$ %{ endif %}%{ endfor %}
-    %{ endif %}
-  %{ elif resume.skills %}
+  %{ else %}
 \noindent\textbf{Skills:} %{ for skill in resume.skills %}VAR{skill|escape_latex}%{ if not loop.last %} $|$ %{ endif %}%{ endfor %}
   %{ endif %}
 %{ endif %}
 
-%{ if resume.additional_info %}
-  %{ if resume.additional_info.certifications %}
+%{ if show_certifications %}
 \par\noindent\textbf{Certifications:} %{ for cert in resume.additional_info.certifications %}VAR{cert|escape_latex}%{ if not loop.last %}, %{ endif %}%{ endfor %}
-  %{ endif %}
-  %{ if resume.additional_info.languages %}
+%{ endif %}
+%{ if show_languages %}
 \par\noindent\textbf{Languages:} %{ for lang in resume.additional_info.languages %}VAR{lang|escape_latex}%{ if not loop.last %}, %{ endif %}%{ endfor %}
-  %{ endif %}
-  %{ if resume.additional_info.professional_memberships %}
+%{ endif %}
+%{ if show_memberships %}
 \par\noindent\textbf{Professional Memberships:} %{ for mem in resume.additional_info.professional_memberships %}VAR{mem|escape_latex}%{ if not loop.last %}, %{ endif %}%{ endfor %}
-  %{ endif %}
-  %# Add minor leadership here if it exists (1 entry with 1 bullet)
-  %{ if resume.leadership %}
-    %{ set is_minor_leadership = (resume.leadership|length == 1 and resume.leadership[0].bullets|length <= 1) %}
-    %{ if is_minor_leadership %}
-      %{ set lead = resume.leadership[0] %}
+%{ endif %}
+%{ if show_minor_leadership %}
+  %{ set lead = resume.leadership[0] %}
 \par\noindent\textbf{Leadership:} VAR{lead.organization|escape_latex}%{ if lead.role %} - VAR{lead.role|escape_latex}%{ endif %}%{ if lead.start_date %} (VAR{lead.start_date|escape_latex}%{ if lead.end_date %} - VAR{lead.end_date|escape_latex}%{ else %} - Present%{ endif %})%{ endif %}
-    %{ endif %}
-  %{ endif %}
-  %{ if resume.additional_info.work_eligibility %}
+%{ endif %}
+%{ if show_work_eligibility %}
 \par\noindent\textbf{Work Eligibility:} VAR{resume.additional_info.work_eligibility|escape_latex}
-  %{ endif %}
-  %{ if resume.additional_info.other %}
+%{ endif %}
+%{ if show_other %}
 \par\noindent VAR{resume.additional_info.other|escape_latex}
-  %{ endif %}
 %{ endif %}
 %{ endif %}
 

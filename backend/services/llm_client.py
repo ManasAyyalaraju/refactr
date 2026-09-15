@@ -378,70 +378,105 @@ Return the corrected bullet text.
         return tailored_bullet
 
 
+MIN_SKILL_CATEGORIES = 2  # floor, enforced below via one bounded retry
 MAX_SKILL_CATEGORIES = 3  # hard cap, enforced below - on top of this, Certifications gets its own category
+
+# A label that just restates the section header instead of describing what's
+# actually inside it - the tell-tale sign of the degenerate one-bucket
+# failure mode this floor exists to catch (observed directly: a 23-skill
+# resume came back as one category literally labeled "Technical Skills").
+_GENERIC_CATEGORY_LABELS = {"technical skills", "skills", "core skills", "general skills", "key skills"}
 
 
 class _SkillCategories(BaseModel):
     categories: List[TechnicalSkillCategory]
 
 
-async def categorize_skills(skills: list[str]) -> list[dict]:
+def _category_split_is_degenerate(categories: list[dict], total_skill_count: int) -> bool:
     """
-    Bucket a flat list of skills into at most MAX_SKILL_CATEGORIES broad,
-    resume-specific categories (plus a separate Certifications category when
-    applicable), for resumes whose skills section isn't already categorized.
-    Used when the user picks the Technical template but the parsed resume has
-    no technical_skills data to render.
+    True when the actual-skills categorization collapsed to fewer than
+    MIN_SKILL_CATEGORIES, or came back under a generic placeholder label,
+    instead of genuinely bucketing the list. Skipped for short skill lists
+    (< 4), where a single category can be the honest answer rather than a
+    degenerate one - nothing to force-split there.
+    """
+    if total_skill_count < 4:
+        return False
+    skill_categories = [c for c in categories if "certif" not in c["label"].lower()]
+    if len(skill_categories) < MIN_SKILL_CATEGORIES:
+        return True
+    return any(c["label"].strip().lower() in _GENERIC_CATEGORY_LABELS for c in skill_categories)
+
+
+async def categorize_skills(skills: list[str], certifications: Optional[list[str]] = None) -> list[dict]:
+    """
+    Bucket a flat list of skills into MIN_SKILL_CATEGORIES-MAX_SKILL_CATEGORIES
+    broad, resume-specific categories (plus a separate Certifications category
+    when applicable), for resumes whose skills section isn't already
+    categorized. Used when the user picks the Technical template but the
+    parsed resume has no technical_skills data to render.
+
+    certifications: a resume's additional_info.certifications, if any - not
+    part of resume.skills, so without passing them in here explicitly they'd
+    never be visible to this call at all, making the "certifications get
+    their own category" behavior below unreachable for the common case where
+    a resume already keeps certifications in their own parsed field.
 
     Category labels are chosen dynamically (not a fixed taxonomy) so they fit
     the actual skill set - e.g. "Design Tools" for a designer, "Programming"
-    for an engineer - but the model is pushed hard toward FEW, BROAD
-    categories rather than one-off niche ones. An earlier version let the
-    model invent as many categories as it wanted, which produced overly
-    granular, inconsistent groupings (e.g. "Web Development", "Data Science",
-    "Databases", "Business Intelligence", "DevOps & Tools" all for one
-    person's skill list) and let certifications get miscategorized as tools.
-    The category count is a hard requirement, so it's enforced in code below
-    rather than trusted to the prompt alone.
+    for an engineer - but the model is pushed toward a FEW, BROAD categories
+    in a fixed 2-3 range rather than either extreme. An earlier version only
+    capped the count from above ("at most 3"), which let the model collapse
+    everything into a single generic-labeled bucket (indistinguishable from
+    not categorizing at all) just as easily as it once over-fragmented into
+    5 narrow ones - both failure modes are wrong, so both ends are enforced
+    now, with one bounded retry (same pattern as bullet_verifier's re-ask)
+    if the first pass comes back degenerate.
     """
     if not client or not skills:
         return []
 
+    all_items = skills + (certifications or [])
+
     system_message = (
         f"You are a resume editor. Group the given flat list of skills into "
-        f"AT MOST {MAX_SKILL_CATEGORIES} BROAD categories for actual skills, "
-        f"plus a separate 'Certifications' category when applicable - "
-        f"{MAX_SKILL_CATEGORIES} skill categories is a hard maximum, never "
-        f"more. Each category should cover a meaningful share of the list, "
-        f"not just one or two items. Choose labels that fit this specific "
-        f"skill set (e.g. 'Programming', 'Design Tools', 'Data Analysis') "
-        f"rather than a fixed template, but do not fragment skills into many "
-        f"narrow categories - when in doubt, merge related skills into the "
-        f"same broader category instead of creating a new one. Keep each "
-        f"label SHORT - one concise term or short phrase (1-2 words), never "
-        f"a combined 'X & Y' or 'X and Y' label - pick whichever single "
-        f"concept best fits most of that category's skills. The one "
-        f"exception to the category cap: if any skills are professional "
-        f"certifications or credentials (even if worded like a skill, e.g. "
-        f"'AWS Certified Cloud Practitioner'), always put those together "
-        f"under their own 'Certifications' category, separate from the "
-        f"rest - this is in addition to, not counted against, the "
-        f"{MAX_SKILL_CATEGORIES}-category limit for actual skills. Do not "
-        f"add, remove, or rename any skill."
+        f"EXACTLY {MIN_SKILL_CATEGORIES} OR {MAX_SKILL_CATEGORIES} BROAD "
+        f"categories for actual skills - never just 1 combined bucket, never "
+        f"more than {MAX_SKILL_CATEGORIES} - plus a separate 'Certifications' "
+        f"category when applicable. Each category should cover a meaningful "
+        f"share of the list, not just one or two items. Choose labels that "
+        f"fit this specific skill set (e.g. 'Programming', 'Design Tools', "
+        f"'Data Analysis') rather than a fixed template, but do not fragment "
+        f"skills into many narrow categories - when in doubt, merge related "
+        f"skills into the same broader category instead of creating a new "
+        f"one. Keep each label SHORT - one concise term or short phrase (1-2 "
+        f"words), never a combined 'X & Y' or 'X and Y' label - pick "
+        f"whichever single concept best fits most of that category's "
+        f"skills. Never use a generic placeholder label that just restates "
+        f"the section itself (e.g. 'Technical Skills', 'Skills', 'Core "
+        f"Skills') - every label must describe what's actually grouped "
+        f"under it. The one exception to the category range: if any items "
+        f"are professional certifications or credentials (even if worded "
+        f"like a skill, e.g. 'AWS Certified Cloud Practitioner'), always put "
+        f"those together under their own 'Certifications' category, "
+        f"separate from the rest - this is in addition to, not counted "
+        f"against, the {MIN_SKILL_CATEGORIES}-{MAX_SKILL_CATEGORIES} range "
+        f"for actual skills. Do not add, remove, or rename any item."
     )
 
     prompt = f"""
 Skills:
-{json.dumps(skills, indent=2)}
+{json.dumps(all_items, indent=2)}
 
 Instructions:
-- At most {MAX_SKILL_CATEGORIES} categories for actual skills - prefer fewer, wider categories over many narrow ones
+- Exactly {MIN_SKILL_CATEGORIES} or {MAX_SKILL_CATEGORIES} categories for actual skills - never 1 combined bucket, never more than {MAX_SKILL_CATEGORIES}
 - Keep each label short - one concise term or short phrase, not a combined "X & Y" label
-- Every skill from the input must appear in exactly one category, unchanged
-- Certifications/credentials always go in their own "Certifications" category, separate from technical skills and not counted against the {MAX_SKILL_CATEGORIES}-category limit
+- Never use a generic label like "Technical Skills" or "Skills" - it must describe what's actually inside it
+- Every item from the input must appear in exactly one category, unchanged
+- Certifications/credentials always go in their own "Certifications" category, separate from technical skills and not counted against the {MIN_SKILL_CATEGORIES}-{MAX_SKILL_CATEGORIES} range
 """
 
-    try:
+    async def _call() -> list[dict]:
         response = await client.chat.completions.parse(
             model=settings.openai_model_fast,
             messages=[
@@ -453,9 +488,40 @@ Instructions:
         )
         parsed = _extract_parsed(response.choices[0].message)
         categories = [c.model_dump() for c in parsed.categories]
-        categories = [c for c in categories if c.get("label") and c.get("items")]
+        return [c for c in categories if c.get("label") and c.get("items")]
+
+    try:
+        categories = await _call()
+
+        if _category_split_is_degenerate(categories, len(all_items)):
+            retry_prompt = prompt + (
+                f"\n\nNOTE: A previous pass over this same list collapsed into a "
+                f"single bucket (or used a generic placeholder label like "
+                f"'Technical Skills'/'Skills'). That is not acceptable - split "
+                f"the actual skills into {MIN_SKILL_CATEGORIES} or "
+                f"{MAX_SKILL_CATEGORIES} genuinely distinct, specifically-"
+                f"labeled groups this time."
+            )
+            response = await client.chat.completions.parse(
+                model=settings.openai_model_fast,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    {"role": "user", "content": retry_prompt},
+                ],
+                response_format=_SkillCategories,
+                temperature=0.2,
+            )
+            parsed = _extract_parsed(response.choices[0].message)
+            retry_categories = [c.model_dump() for c in parsed.categories]
+            retry_categories = [c for c in retry_categories if c.get("label") and c.get("items")]
+            # Bounded to one retry - if it's still degenerate, keep the
+            # original rather than risk another round; a single honest
+            # category beats forcing a nonsensical split.
+            if not _category_split_is_degenerate(retry_categories, len(all_items)):
+                categories = retry_categories
+
         categories = _enforce_skill_category_cap(categories)
-        return _restore_dropped_skills(categories, skills)
+        return _restore_dropped_skills(categories, all_items)
     except Exception:
         return []
 

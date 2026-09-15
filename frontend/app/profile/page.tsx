@@ -7,9 +7,9 @@ import Footer from '@/components/Footer';
 import Avatar, { AVATAR_COUNT } from '@/components/Avatar';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { createClient } from '@/lib/supabase/client';
-import { listBaseResumes, downloadBaseResume } from '@/lib/supabase/resumes';
+import { listBaseResumes, downloadBaseResume, deleteBaseResume, BaseResumeRow } from '@/lib/supabase/resumes';
 import { reparseResume } from '@/lib/api';
-import { Pencil, Check, X, Shuffle, LogOut } from 'lucide-react';
+import { Pencil, Check, X, Shuffle, LogOut, Trash2 } from 'lucide-react';
 
 interface ReparseLogEntry {
   title: string;
@@ -157,6 +157,66 @@ export default function ProfilePage() {
     const succeeded = log.filter((r) => r.ok).length;
     setReparseStatus(`Done — ${succeeded}/${resumes.length} reparsed successfully.`);
     setIsReparsing(false);
+  };
+
+  const [deletableResumes, setDeletableResumes] = useState<BaseResumeRow[]>([]);
+  const [selectedForDeletion, setSelectedForDeletion] = useState<Set<string>>(new Set());
+  const [isLoadingDeletable, setIsLoadingDeletable] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteStatus, setDeleteStatus] = useState('');
+  const [deleteLog, setDeleteLog] = useState<ReparseLogEntry[]>([]);
+
+  const loadDeletableResumes = async () => {
+    if (!user) return;
+    setIsLoadingDeletable(true);
+    const resumes = await listBaseResumes(supabase, user.id);
+    setDeletableResumes(resumes);
+    setSelectedForDeletion(new Set());
+    setIsLoadingDeletable(false);
+  };
+
+  useEffect(() => {
+    if (user) loadDeletableResumes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  const toggleResumeSelection = (id: string) => {
+    setSelectedForDeletion((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedForDeletion.size === 0) return;
+
+    const targets = deletableResumes.filter((r) => selectedForDeletion.has(r.id));
+    const confirmed = window.confirm(
+      `Permanently delete ${targets.length} resume${targets.length === 1 ? '' : 's'}? ` +
+        `This can't be undone. Any tailored history linked to ${targets.length === 1 ? 'it' : 'them'} stays, just unlinked.`
+    );
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    setDeleteStatus('Deleting...');
+    setDeleteLog([]);
+
+    const log: ReparseLogEntry[] = [];
+    for (const resume of targets) {
+      const ok = await deleteBaseResume(supabase, resume.id, resume.storage_path);
+      log.push({ title: resume.title, ok, message: ok ? undefined : 'Delete failed.' });
+      setDeleteLog([...log]);
+    }
+
+    const succeeded = log.filter((r) => r.ok).length;
+    setDeleteStatus(`Done — ${succeeded}/${targets.length} deleted.`);
+    setIsDeleting(false);
+    await loadDeletableResumes();
   };
 
   return (
@@ -312,6 +372,70 @@ export default function ProfilePage() {
                 ))}
               </ul>
             )}
+
+            <div className="border-t border-black/[0.19] mt-6 pt-6">
+              <p className="font-semibold text-[14px] tracking-[-0.28px] text-black mb-1">
+                Delete Resumes
+              </p>
+              <p className="text-[13px] tracking-[-0.26px] text-black/70 mb-4">
+                Not a real product feature. Permanently deletes the selected saved resumes (storage
+                file + row). Tailored history linked to a deleted resume is kept, just unlinked.
+              </p>
+
+              {isLoadingDeletable ? (
+                <p className="text-[13px] text-black/50">Loading your resumes...</p>
+              ) : deletableResumes.length === 0 ? (
+                <p className="text-[13px] text-black/50">No saved resumes.</p>
+              ) : (
+                <div className="border border-black/[0.19] rounded-lg divide-y divide-black/[0.12] mb-4 max-h-64 overflow-y-auto">
+                  {deletableResumes.map((resume) => (
+                    <label
+                      key={resume.id}
+                      className="flex items-center gap-3 px-3 py-2.5 text-[13px] text-black cursor-pointer hover:bg-black/[0.02]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedForDeletion.has(resume.id)}
+                        onChange={() => toggleResumeSelection(resume.id)}
+                        disabled={isDeleting}
+                        className="cursor-pointer"
+                      />
+                      <span className="truncate">{resume.title}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                disabled={isDeleting || selectedForDeletion.size === 0}
+                className="inline-flex items-center gap-2 bg-[#fb0000]/[0.17] text-[#fb0000] rounded-[14px] px-5 py-2.5 text-[14px] hover:bg-[#fb0000]/25 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {isDeleting
+                  ? 'Deleting...'
+                  : `Delete Selected${selectedForDeletion.size > 0 ? ` (${selectedForDeletion.size})` : ''}`}
+              </button>
+
+              {deleteStatus && (
+                <p className="text-[13px] tracking-[-0.26px] text-black mt-3">{deleteStatus}</p>
+              )}
+
+              {deleteLog.length > 0 && (
+                <ul className="mt-3 space-y-1">
+                  {deleteLog.map((entry, i) => (
+                    <li
+                      key={`${entry.title}-${i}`}
+                      className={`text-[13px] tracking-[-0.26px] ${entry.ok ? 'text-green-700' : 'text-red-600'}`}
+                    >
+                      {entry.ok ? '✓' : '✗'} {entry.title}
+                      {entry.message ? ` — ${entry.message}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       </main>

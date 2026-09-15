@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Download, FileText, CheckCircle2, AlertTriangle, Plus, type LucideIcon, RefreshCw } from 'lucide-react';
 import type { CompatibilityReport, JobDescription } from '@/types/resume';
+import PdfPreview from './PdfPreview';
 
 interface TailoredResultViewProps {
   resumeSkills: string[];
@@ -12,6 +13,23 @@ interface TailoredResultViewProps {
   primaryAction: { label: string; onClick: () => void; icon?: LucideIcon };
   heading?: string;
   subheading?: string;
+}
+
+function sanitizeFilenamePart(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '').trim();
+}
+
+// "Company - Job Title - Resume.pdf" instead of a generic name, so a user
+// tailoring against multiple jobs can tell their downloads apart. Falls back
+// gracefully when the JD didn't have a company/title parsed out.
+function buildTailoredResumeFilename(jobDescription?: JobDescription): string {
+  const parts = [jobDescription?.company, jobDescription?.title]
+    .filter((v): v is string => Boolean(v && v.trim()))
+    .map(sanitizeFilenamePart)
+    .filter(Boolean);
+
+  if (parts.length === 0) return 'Tailored Resume.pdf';
+  return `${[...parts, 'Resume'].join(' - ')}.pdf`;
 }
 
 function scoreTheme(score: number) {
@@ -73,7 +91,7 @@ export default function TailoredResultView({
     try {
       const link = document.createElement('a');
       link.href = pdfUrl;
-      link.download = 'tailored_resume.pdf';
+      link.download = buildTailoredResumeFilename(jobDescription);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -291,12 +309,7 @@ export default function TailoredResultView({
         {pdfUrl ? (
           <div className="p-4 md:p-8 flex items-center justify-center min-h-[900px] bg-black/[0.02]">
             <div className="bg-white border border-black/10 rounded overflow-hidden w-full max-w-4xl">
-              <iframe
-                src={`${pdfUrl}#view=FitH&toolbar=0&navpanes=0&scrollbar=1`}
-                className="w-full h-[850px] border-0"
-                title="Resume PDF Preview"
-                style={{ display: 'block' }}
-              />
+              <PdfPreview url={pdfUrl} mode="scroll" className="w-full h-[850px]" />
             </div>
           </div>
         ) : (

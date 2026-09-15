@@ -7,6 +7,7 @@ import Footer from '@/components/Footer';
 import FileUpload from '@/components/FileUpload';
 import ErrorMessage from '@/components/ErrorMessage';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import PdfPreview from '@/components/PdfPreview';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { uploadBaseResume, findBaseResumeByFileName, replaceBaseResume, BaseResumeRow } from '@/lib/supabase/resumes';
@@ -184,15 +185,14 @@ export default function NewResumePage() {
 
                 {previewUrls[resumeFormat] ? (
                   <div>
-                    <p className="font-semibold text-[15px] tracking-[-0.3px] text-black mb-2">
-                      Sample {resumeFormat === 'regular' ? 'Regular' : 'Technical'} template
+                    <p className="font-semibold text-[15px] tracking-[-0.3px] text-black mb-1">
+                      Sample layout - not your resume
+                    </p>
+                    <p className="text-[13px] text-black/60 mb-2">
+                      This preview shows the {resumeFormat === 'regular' ? 'Regular' : 'Technical'} template&apos;s style with placeholder content. Your uploaded resume isn&apos;t shown here.
                     </p>
                     <div className="border border-gray-200 rounded-lg overflow-hidden bg-white">
-                      <iframe
-                        src={`${previewUrls[resumeFormat]}#view=FitH&toolbar=0&navpanes=0&scrollbar=1`}
-                        className="w-full h-[500px] border-0"
-                        title={`${resumeFormat} template sample`}
-                      />
+                      <PdfPreview url={previewUrls[resumeFormat]} mode="scroll" className="w-full h-[500px]" />
                     </div>
                   </div>
                 ) : (

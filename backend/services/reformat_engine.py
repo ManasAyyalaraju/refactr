@@ -3,35 +3,10 @@ from typing import Optional
 from models.resume_models import Resume
 from services.llm_client import generate_headline_summary
 from services.tailor_engine import (
-    estimate_resume_fullness,
+    compute_compact_mode,
     conditionally_remove_headline_summary,
     format_skills_list,
 )
-
-
-def _compute_compact_mode(resume: Resume) -> int:
-    """
-    Mirror the compactness logic from tailor_engine to decide spacing.
-    Returns the fullness score for downstream decisions.
-    """
-    fullness_score = estimate_resume_fullness(resume)
-
-    total_bullets = (
-        sum(len(exp.bullets) for exp in resume.experience) +
-        sum(len(proj.bullets) for proj in resume.projects) +
-        sum(len(lead.bullets) for lead in resume.leadership) +
-        sum(len(vol.bullets) for vol in resume.volunteer_work)
-    )
-
-    has_work_experience = len(resume.experience) > 0
-
-    resume.compact_mode = (
-        has_work_experience and
-        total_bullets >= 15 and
-        fullness_score >= 35
-    )
-
-    return fullness_score
 
 
 def _strip_text(text: Optional[str]) -> Optional[str]:
@@ -141,7 +116,7 @@ async def reformat_resume(resume: Resume) -> Resume:
     - Add headline/summary ONLY when missing and resume is not compact
     """
     resume = _trim_resume_strings(resume)
-    _compute_compact_mode(resume)
+    resume.compact_mode = compute_compact_mode(resume)
 
     if resume.compact_mode:
         resume = conditionally_remove_headline_summary(resume)

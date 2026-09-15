@@ -4,7 +4,13 @@ from models.resume_models import Resume, TechnicalSkillCategory
 from models.job_models import JobDescription
 from core.exceptions import TailoringGenerationError
 from services.bullet_verifier import verify_bullets, find_unauthorized_terms
-from .llm_client import rewrite_resume_sections, categorize_skills, assign_skills_to_existing_categories, revise_bullet
+from .llm_client import (
+    rewrite_resume_sections,
+    categorize_skills,
+    assign_skills_to_existing_categories,
+    revise_bullet,
+    _category_split_is_degenerate,
+)
 import json
 import logging
 import re
@@ -67,6 +73,34 @@ def estimate_resume_fullness(resume: Resume) -> int:
         score += len(resume.technical_skills)  # each category line ~= a bullet
 
     return score
+
+
+def compute_compact_mode(resume: Resume) -> bool:
+    """
+    Shared compact-mode decision - used identically at reformat time
+    (reformat_engine.py) and tailor time (tailor_resume below). A resume's
+    bullet/section counts don't change between the two stages (tailoring
+    only rewords bullets, it never adds or removes them), so there's no
+    reason for each stage to maintain its own copy of this threshold logic;
+    previously they did, as two separately-written but textually-identical
+    formulas. Page-fit precision from here on is handled by render_resume_pdf
+    measuring the actual rendered output (see pdf_writer.py's roomy_mode
+    stepping) - this only needs to pick a reasonable starting tier.
+    """
+    fullness_score = estimate_resume_fullness(resume)
+    total_bullets = (
+        sum(len(exp.bullets) for exp in resume.experience) +
+        sum(len(proj.bullets) for proj in resume.projects) +
+        sum(len(lead.bullets) for lead in resume.leadership) +
+        sum(len(vol.bullets) for vol in resume.volunteer_work)
+    )
+    has_work_experience = len(resume.experience) > 0
+
+    return (
+        has_work_experience and    # Must have work experience
+        total_bullets >= 15 and    # At least 15 bullets
+        fullness_score >= 35       # High fullness score
+    )
 
 
 def conditionally_remove_headline_summary(resume: Resume) -> Resume:
@@ -147,7 +181,7 @@ def format_skills_list(skills: list[str]) -> list[str]:
     return [format_skill(skill) for skill in skills]
 
 
-async def ensure_technical_skills(resume: Resume) -> Resume:
+async def ensure_technical_skills(resume: Resume, allow_recategorize: bool = False) -> Resume:
     """
     Populate resume.technical_skills from the flat resume.skills list when
     the source resume didn't already present skills in a categorized format.
@@ -155,12 +189,39 @@ async def ensure_technical_skills(resume: Resume) -> Resume:
     without it, picking "Technical" on a resume with a flat skills list has
     no visible effect since the template only renders a TECHNICAL SKILLS
     section when technical_skills is non-empty.
+
+    allow_recategorize: when True (tailor time only - see tailor_routes.py),
+    an existing technical_skills that's degenerate (collapsed to a single,
+    often generically-labeled bucket like "Technical Skills" - the parser
+    faithfully transcribes a resume's own "Technical Skills: A, B, C" line
+    that way, since it reads as "categorized" even though a single generic
+    label carries no more structure than a flat list) gets re-categorized
+    from scratch through the same categorize_skills() used for an
+    uncategorized resume, instead of just having new skills appended to the
+    existing bad bucket. Defaults to False so reformat time (a first save)
+    leaves whatever categorization the user's own resume presented alone,
+    even if degenerate - tailoring, which is already reshaping the resume
+    for a specific submission, is the more appropriate moment to fix it.
     """
     if not resume.skills:
         return resume
 
-    if not resume.technical_skills:
-        categories = await categorize_skills(resume.skills)
+    certifications = (
+        resume.additional_info.certifications
+        if resume.additional_info and resume.additional_info.certifications
+        else None
+    )
+
+    needs_fresh_categorization = not resume.technical_skills or (
+        allow_recategorize
+        and _category_split_is_degenerate(
+            [c.model_dump() for c in resume.technical_skills],
+            len(resume.skills) + len(certifications or []),
+        )
+    )
+
+    if needs_fresh_categorization:
+        categories = await categorize_skills(resume.skills, certifications)
         if categories:
             resume.technical_skills = [TechnicalSkillCategory(**c) for c in categories]
         return resume
@@ -300,59 +361,7 @@ async def tailor_resume(
                 resume.skills.append(skill)
                 existing_lower.add(skill.lower())
 
-    # Calculate resume fullness to determine compact mode
-    fullness_score = estimate_resume_fullness(resume)
-
-    # Count total bullets for density analysis
-    total_bullets = 0
-    for exp in resume.experience:
-        total_bullets += len(exp.bullets)
-    for proj in resume.projects:
-        total_bullets += len(proj.bullets)
-    for lead in resume.leadership:
-        total_bullets += len(lead.bullets)
-    for vol in resume.volunteer_work:
-        total_bullets += len(vol.bullets)
-
-    # Count sections
-    num_sections = sum([
-        1 if resume.experience else 0,
-        1 if resume.projects else 0,
-        1 if resume.leadership else 0,
-        1 if resume.education else 0,
-        1 if resume.volunteer_work else 0,
-        1 if resume.awards else 0,
-        1 if resume.publications else 0
-    ])
-
-    # Calculate average bullet length
-    all_bullets = []
-    for exp in resume.experience:
-        all_bullets.extend(exp.bullets)
-    for proj in resume.projects:
-        all_bullets.extend(proj.bullets)
-    for lead in resume.leadership:
-        all_bullets.extend(lead.bullets)
-    for vol in resume.volunteer_work:
-        all_bullets.extend(vol.bullets)
-
-    avg_bullet_length = sum(len(b) for b in all_bullets) / len(all_bullets) if all_bullets else 150
-
-    # Check critical indicators
-    has_work_experience = len(resume.experience) > 0
-    has_headline = resume.headline not in [None, ""]
-    has_summary = resume.summary not in [None, ""]
-
-    # Set compact mode for SPACING using RELAXED criteria
-    # Use minimal spacing if resume has substantial content, regardless of bullet length
-    # This ensures "Full but Verbose" resumes (like Aswath) get minimal spacing
-    resume.compact_mode = (
-        has_work_experience and              # Must have work experience
-        total_bullets >= 15 and              # At least 15 bullets
-        fullness_score >= 35                 # High fullness score
-        # NOTE: Don't check avg_bullet_length here - that's for LLM only
-        # Even if bullets are long/verbose, use minimal spacing to save space
-    )
+    resume.compact_mode = compute_compact_mode(resume)
 
     # Keep original experience, project, and leadership structures for safety
     original_experience = [exp.model_copy(deep=True) for exp in resume.experience]

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import PdfPreview from '@/components/PdfPreview';
 import { useAuth } from '@/lib/supabase/auth-context';
 import { createClient } from '@/lib/supabase/client';
 import { listBaseResumes, downloadBaseResume, listGeneratedResumes, BaseResumeRow, GeneratedResumeRow } from '@/lib/supabase/resumes';
@@ -155,11 +156,7 @@ export default function DashboardPage() {
                       onClick={() => setExpanded(true)}
                       className="relative w-full aspect-[8.5/11] cursor-pointer group overflow-hidden"
                     >
-                      <iframe
-                        src={`${previewUrl}#view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
-                        className="w-full h-full border-0 pointer-events-none"
-                        title="Resume preview"
-                      />
+                      <PdfPreview url={previewUrl} mode="fit" className="w-full h-full" />
                       <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition-colors">
                         <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-white text-black text-xs font-medium px-3 py-1.5 rounded-full shadow">
                           Click to expand
@@ -184,11 +181,11 @@ export default function DashboardPage() {
       {expanded && previewUrl && (
         <div
           onClick={() => setExpanded(false)}
-          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-8"
+          className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="bg-white rounded-lg shadow-2xl aspect-[8.5/11] max-h-[85vh] max-w-[90vw] flex flex-col overflow-hidden"
+            className="bg-white rounded-lg shadow-2xl aspect-[8.5/11] h-[96vh] max-w-[96vw] flex flex-col overflow-hidden"
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
               <span className="text-sm font-medium text-gray-900 truncate">
@@ -202,11 +199,7 @@ export default function DashboardPage() {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <iframe
-              src={`${previewUrl}#view=FitH&toolbar=0&navpanes=0&scrollbar=1`}
-              className="w-full flex-1 border-0"
-              title="Expanded resume preview"
-            />
+            <PdfPreview url={previewUrl} mode="scroll" className="w-full flex-1" />
           </div>
         </div>
       )}

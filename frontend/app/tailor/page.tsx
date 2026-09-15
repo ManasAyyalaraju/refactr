@@ -8,6 +8,7 @@ import Footer from '@/components/Footer';
 import JobDescriptionInput from '@/components/JobDescriptionInput';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ErrorMessage from '@/components/ErrorMessage';
+import PdfPreview from '@/components/PdfPreview';
 import { Sparkles, Wand2, FileText, Code2 } from 'lucide-react';
 import { tailorResume, reformatResume, parseJobDescription, ResumeFormat } from '@/lib/api';
 import { createClient } from '@/lib/supabase/client';
@@ -651,11 +652,7 @@ function TailorPageInner() {
                     </div>
                     <div className="p-4 md:p-6">
                       <div className="bg-white rounded-lg shadow-inner overflow-hidden">
-                        <iframe
-                          src={`${reformatPdfUrl}#view=FitH&toolbar=0&navpanes=0&scrollbar=1`}
-                          className="w-full h-[750px] border-0"
-                          title="Reformatted Resume PDF Preview"
-                        />
+                        <PdfPreview url={reformatPdfUrl} mode="scroll" className="w-full h-[750px]" />
                       </div>
                     </div>
                   </div>

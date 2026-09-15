@@ -40,6 +40,38 @@ def _dedupe_additional_info_against_technical_skills(resume: Resume) -> None:
         resume.additional_info.professional_memberships = []
 
 
+def _dedupe_additional_info_against_leadership(resume: Resume) -> None:
+    """
+    Mutates resume.additional_info.professional_memberships in place to drop
+    any organization already covered by a resume.leadership entry. Same
+    underlying organization can legitimately end up captured twice by the
+    parser - e.g. an "Organizations: Financial Leadership Association" line
+    under Education alongside a full "Financial Leadership Association (FLA)
+    - Member" entry under Leadership/Extracurricular elsewhere in the resume
+    - and the Leadership entry (rendered either as its own LEADERSHIP section
+    or the minor-leadership line under Additional Information) already names
+    the organization with strictly more detail (role, dates), so repeating
+    it as a bare "Professional Memberships" line is pure duplication, not
+    new information. Always safe to call, unlike the technical-skills dedup
+    above which is gated on use_technical_skills.
+    """
+    if not resume.additional_info or not resume.additional_info.professional_memberships or not resume.leadership:
+        return
+
+    def _normalize_org(name: str) -> str:
+        # Strip a trailing parenthetical abbreviation - "Financial Leadership
+        # Association (FLA)" and "Financial Leadership Association" should
+        # match as the same organization.
+        return re.sub(r"\s*\([^)]*\)\s*$", "", name).strip().lower()
+
+    leadership_orgs = {_normalize_org(lead.organization) for lead in resume.leadership if lead.organization}
+
+    resume.additional_info.professional_memberships = [
+        m for m in resume.additional_info.professional_memberships
+        if _normalize_org(m) not in leadership_orgs
+    ]
+
+
 _CONTROL_CHARS_RE = re.compile(
     "[" + "".join(chr(c) for c in range(0x00, 0x20) if chr(c) not in "\t\n\r") + chr(0x7F) + "]"
 )
@@ -129,6 +161,33 @@ def _count_pdf_pages(pdf_bytes: bytes) -> int:
     return len(PdfReader(BytesIO(pdf_bytes)).pages)
 
 
+# A genuinely full page's content should reach at least this far down before
+# the bottom margin - below it, the page reads as leaving an unintentional
+# gap rather than a deliberately spaced layout. Chosen empirically (real
+# examples underfilled to ~68-78%); not exact science, but the mechanism is
+# self-correcting either way - see render_resume_pdf.
+ROOMY_FILL_THRESHOLD = 0.85
+
+
+def _content_fill_ratio(pdf_bytes: bytes) -> float:
+    """
+    Fraction (0-1) of page 1's height actually used by content, measured
+    from the top down to the lowest character on the page. The fill-ratio
+    counterpart to _count_pdf_pages's overflow check - same idea, opposite
+    direction: detects a one-page render that's leaving the page visibly
+    underfull instead of one that's overflowing it.
+    """
+    import pdfplumber
+    from io import BytesIO
+
+    with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+        page = pdf.pages[0]
+        bottoms = [c["bottom"] for c in page.chars]
+        if not bottoms:
+            return 0.0
+        return max(bottoms) / page.height
+
+
 def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> bytes:
     """
     Render a Resume model into a PDF bytes object using a LaTeX template.
@@ -138,28 +197,61 @@ def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> byte
     categorized TECHNICAL SKILLS section is omitted even if the resume has
     parsed technical_skills data (falls back to the single-line skills format).
 
-    If compact_mode is on and the rendered PDF still doesn't fit on one page,
-    retries once with ultra_compact_mode (a small font-size nudge) rather than
-    guessing upfront whether a given resume needs it - so the extra
-    compression only ever gets applied to resumes that actually overflow.
+    Page fit is corrected by measuring the actual render and stepping one
+    spacing tier at a time - compact_mode's bullet-count heuristic is only a
+    starting guess, and even a correctly-compact-flagged resume can still
+    render underfull once its bullets are compressed (observed directly: a
+    24-bullet resume flagged compact_mode still left ~25-30% of the page
+    blank). Two independent corrections, applied in sequence:
+    1. Overflow: if compact_mode still doesn't fit one page, retry once with
+       ultra_compact_mode (a small font-size nudge).
+    2. Underfill: if the (possibly still-compact) one-page render leaves the
+       page visibly underfull (see _content_fill_ratio), step one tier
+       looser - compact_mode off, or roomy_mode on - and keep that render
+       only if it's still one page. Bounded to a single step per direction
+       (mirrors the one-retry pattern used elsewhere, e.g. bullet_verifier's
+       re-ask) rather than an open-ended search, and never touches bullet
+       text - typography only, same principle as the short-wrapped-line fix.
     """
     render_target = resume.model_copy(deep=True)
     if use_technical_skills:
         _dedupe_additional_info_against_technical_skills(render_target)
     else:
         render_target.technical_skills = []
+    _dedupe_additional_info_against_leadership(render_target)
 
     pdf_bytes = _compile_resume_pdf(render_target)
 
-    if render_target.compact_mode and not render_target.ultra_compact_mode:
-        try:
-            if _count_pdf_pages(pdf_bytes) > 1:
-                render_target.ultra_compact_mode = True
-                pdf_bytes = _compile_resume_pdf(render_target)
-        except Exception:
-            # If page counting fails for any reason, fall back to the
-            # already-successful first render rather than blocking the user.
-            pass
+    try:
+        page_count = _count_pdf_pages(pdf_bytes)
+    except Exception:
+        # If page counting fails for any reason, ship the first render
+        # rather than guess further.
+        return pdf_bytes
+
+    if page_count > 1:
+        if render_target.compact_mode and not render_target.ultra_compact_mode:
+            render_target.ultra_compact_mode = True
+            pdf_bytes = _compile_resume_pdf(render_target)
+        return pdf_bytes
+
+    try:
+        if _content_fill_ratio(pdf_bytes) < ROOMY_FILL_THRESHOLD:
+            if render_target.compact_mode:
+                render_target.compact_mode = False
+            elif not render_target.roomy_mode:
+                render_target.roomy_mode = True
+            else:
+                return pdf_bytes
+
+            looser_pdf_bytes = _compile_resume_pdf(render_target)
+            # Loosening spacing can push borderline content onto a 2nd page -
+            # overflow is worse than an underfull page, so only keep it if
+            # it's still one page.
+            if _count_pdf_pages(looser_pdf_bytes) == 1:
+                pdf_bytes = looser_pdf_bytes
+    except Exception:
+        pass
 
     return pdf_bytes
 
