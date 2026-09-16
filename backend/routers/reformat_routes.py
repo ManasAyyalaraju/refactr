@@ -15,7 +15,8 @@ from core.timing import timed_stage
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.reformat_engine import reformat_resume
 from services.skill_inference import infer_plausible_skills_for_resume
-from services.tailor_engine import ensure_technical_skills, render_pdf_with_underfill_backfill
+from services.tailor_engine import ensure_technical_skills
+from services.pdf_writer import render_resume_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +92,7 @@ async def reformat_resume_from_pdf(
             reformatted = await reformat_resume(resume)
 
         with timed_stage("render_pdf", timings):
-            pdf_bytes = await render_pdf_with_underfill_backfill(reformatted, use_technical_skills)
+            pdf_bytes = render_resume_pdf(reformatted, use_technical_skills)
 
         if output.lower() == "json":
             with timed_stage("infer_skills", timings):

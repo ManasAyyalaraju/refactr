@@ -188,75 +188,6 @@ def _content_fill_ratio(pdf_bytes: bytes) -> float:
         return max(bottoms) / page.height
 
 
-def render_resume_pdf_ex(resume: Resume, use_technical_skills: bool = True) -> tuple[bytes, bool]:
-    """
-    Same rendering/correction behavior as render_resume_pdf (see below), but
-    also reports whether the post-render underfill check discovered this
-    resume needed a headline/summary after all: compact_mode's pre-render
-    bullet-count guess said "full enough to skip it," but the actual
-    one-page render came back visibly underfull with no headline/summary
-    already present. render_resume_pdf is a thin wrapper that just discards
-    this second value, for callers (e.g. the template-preview endpoint)
-    that don't act on it.
-
-    This module deliberately has no LLM access (pure rendering), so it
-    can't generate the missing headline/summary itself - it only reports
-    that one would help. See tailor_engine.render_pdf_with_underfill_backfill
-    for the async caller that acts on this signal.
-    """
-    render_target = resume.model_copy(deep=True)
-    if use_technical_skills:
-        _dedupe_additional_info_against_technical_skills(render_target)
-    else:
-        render_target.technical_skills = []
-    _dedupe_additional_info_against_leadership(render_target)
-
-    pdf_bytes = _compile_resume_pdf(render_target)
-
-    try:
-        page_count = _count_pdf_pages(pdf_bytes)
-    except Exception:
-        # If page counting fails for any reason, ship the first render
-        # rather than guess further.
-        return pdf_bytes, False
-
-    if page_count > 1:
-        if render_target.compact_mode and not render_target.ultra_compact_mode:
-            render_target.ultra_compact_mode = True
-            pdf_bytes = _compile_resume_pdf(render_target)
-        return pdf_bytes, False
-
-    needs_headline_summary = False
-    try:
-        if _content_fill_ratio(pdf_bytes) < ROOMY_FILL_THRESHOLD:
-            was_compact = render_target.compact_mode
-            if render_target.compact_mode:
-                render_target.compact_mode = False
-            elif not render_target.roomy_mode:
-                render_target.roomy_mode = True
-            else:
-                return pdf_bytes, False
-
-            looser_pdf_bytes = _compile_resume_pdf(render_target)
-            # Loosening spacing can push borderline content onto a 2nd page -
-            # overflow is worse than an underfull page, so only keep it if
-            # it's still one page.
-            if _count_pdf_pages(looser_pdf_bytes) == 1:
-                pdf_bytes = looser_pdf_bytes
-                # Only a genuine compact->sparse flip, on a resume that
-                # doesn't already have a headline/summary, counts as "this
-                # should have had one" - roomy_mode alone (an
-                # already-non-compact resume that's still a bit underfull)
-                # doesn't imply missing content, just slightly looser spacing.
-                needs_headline_summary = (
-                    was_compact and not resume.headline and not resume.summary
-                )
-    except Exception:
-        pass
-
-    return pdf_bytes, needs_headline_summary
-
-
 def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> bytes:
     """
     Render a Resume model into a PDF bytes object using a LaTeX template.
@@ -280,9 +211,52 @@ def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> byte
        only if it's still one page. Bounded to a single step per direction
        (mirrors the one-retry pattern used elsewhere, e.g. bullet_verifier's
        re-ask) rather than an open-ended search, and never touches bullet
-       text - typography only, same principle as the short-wrapped-line fix.
+       text or content - typography only, same principle as the
+       short-wrapped-line fix. Content (e.g. headline/summary) is never
+       added here or by any caller - a resume that was missing one going
+       in stays that way; underfill is corrected with spacing alone.
     """
-    return render_resume_pdf_ex(resume, use_technical_skills)[0]
+    render_target = resume.model_copy(deep=True)
+    if use_technical_skills:
+        _dedupe_additional_info_against_technical_skills(render_target)
+    else:
+        render_target.technical_skills = []
+    _dedupe_additional_info_against_leadership(render_target)
+
+    pdf_bytes = _compile_resume_pdf(render_target)
+
+    try:
+        page_count = _count_pdf_pages(pdf_bytes)
+    except Exception:
+        # If page counting fails for any reason, ship the first render
+        # rather than guess further.
+        return pdf_bytes
+
+    if page_count > 1:
+        if render_target.compact_mode and not render_target.ultra_compact_mode:
+            render_target.ultra_compact_mode = True
+            pdf_bytes = _compile_resume_pdf(render_target)
+        return pdf_bytes
+
+    try:
+        if _content_fill_ratio(pdf_bytes) < ROOMY_FILL_THRESHOLD:
+            if render_target.compact_mode:
+                render_target.compact_mode = False
+            elif not render_target.roomy_mode:
+                render_target.roomy_mode = True
+            else:
+                return pdf_bytes
+
+            looser_pdf_bytes = _compile_resume_pdf(render_target)
+            # Loosening spacing can push borderline content onto a 2nd page -
+            # overflow is worse than an underfull page, so only keep it if
+            # it's still one page.
+            if _count_pdf_pages(looser_pdf_bytes) == 1:
+                pdf_bytes = looser_pdf_bytes
+    except Exception:
+        pass
+
+    return pdf_bytes
 
 
 def _compile_resume_pdf(render_target: Resume) -> bytes:

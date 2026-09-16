@@ -211,6 +211,7 @@ VAR{resume.summary|escape_latex}
 %{ endif %}
 
 %# Use split format only if there's a second line, otherwise use simple format
+\par
 %{ if second_line %}
 \resumeEducationSplit{VAR{first_line}}{VAR{date_text}}{VAR{second_line}}
 %{ else %}
@@ -218,15 +219,15 @@ VAR{resume.summary|escape_latex}
 %{ endif %}
 
 %{ if edu.relevant_coursework %}
-\noindent Relevant Coursework: VAR{edu.relevant_coursework|escape_latex}
+\par\noindent Relevant Coursework: VAR{edu.relevant_coursework|escape_latex}
 %{ endif %}
 
 %{ if edu.scholarships %}
-\noindent Scholarships: VAR{edu.scholarships|escape_latex}
+\par\noindent Scholarships: VAR{edu.scholarships|escape_latex}
 %{ endif %}
 
 %{ if edu.gpa %}
-\noindent Overall GPA: VAR{edu.gpa|escape_latex}
+\par\noindent Overall GPA: VAR{edu.gpa|escape_latex}
 %{ endif %}
 %{ if not loop.last %}
 \entryvspace
@@ -324,7 +325,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.awards %}
 \section*{AWARDS \& HONORS}
 %{ for award in resume.awards %}
-\noindent
+\par\noindent
 \begin{minipage}[t]{0.7\textwidth}
   \textbf{VAR{award.title|escape_latex}}%{ if award.organization %} -- \textit{VAR{award.organization|escape_latex}}%{ endif %}
 \end{minipage}
@@ -343,7 +344,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.publications %}
 \section*{PUBLICATIONS}
 %{ for pub in resume.publications %}
-\noindent\textbf{VAR{pub.title|escape_latex}}
+\par\noindent\textbf{VAR{pub.title|escape_latex}}
 %{ if pub.authors or pub.venue or pub.date %}
 \par\noindent\textit{
 %{ if pub.authors %}VAR{pub.authors|escape_latex}%{ endif %}

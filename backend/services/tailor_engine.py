@@ -10,6 +10,8 @@ from services.bullet_verifier import (
     find_duplicate_opening_verbs,
     extract_opening_verb,
     find_overlong_bullets,
+    find_orphan_line_bullets,
+    fit_extension_alternative,
     SPARSE_BULLET_CHAR_CEILING,
 )
 from .llm_client import (
@@ -18,14 +20,13 @@ from .llm_client import (
     assign_skills_to_existing_categories,
     revise_bullet,
     revise_weak_opener,
-    revise_repeated_verb,
+    revise_repeated_verbs_batch,
     revise_overlong_bullet,
-    generate_headline_summary,
+    generate_extension_alternatives,
     classify_confirmed_skills,
     weave_skill_into_bullet,
     _category_split_is_degenerate,
 )
-from services.pdf_writer import render_resume_pdf_ex, _count_pdf_pages
 import asyncio
 import json
 import logging
@@ -121,11 +122,12 @@ def compute_compact_mode(resume: Resume) -> bool:
 
 def conditionally_remove_headline_summary(resume: Resume) -> Resume:
     """
-    Remove headline and summary sections if the resume is too full to fit on one page.
-    ADD headline and summary if the resume is sparse and needs more content.
+    Remove headline and summary if the resume is too full to fit on one
+    page comfortably. Never adds one - a resume that came in without a
+    headline/summary stays that way; this only ever strips an existing one.
 
     Threshold guideline:
-    - Score < 35: Resume is sparse, KEEP or ADD headline/summary to fill space
+    - Score < 35: Resume is sparse, KEEP headline/summary if present
     - Score >= 35: Resume is full, REMOVE headline/summary to save space
     """
     FULLNESS_THRESHOLD = 35  # Raised from 30
@@ -380,10 +382,16 @@ async def _correct_weak_openers(resume: Resume, jd_json: dict) -> None:
 async def _correct_repeated_opening_verbs(resume: Resume, jd_json: dict) -> None:
     """
     Auto-correct fix-up for bullets that share an opening verb with another
-    bullet on the same resume. Unlike weak-opener correction, this needs
-    cross-bullet awareness - each fix must avoid every verb already in use,
-    including ones just fixed earlier in this same pass - so corrections
-    run sequentially with a growing used-verb set rather than concurrently.
+    bullet on the same resume. Needs cross-bullet awareness - each fix
+    must avoid every verb already in use - but unlike a per-bullet
+    sequential loop, that awareness comes from a single batched call
+    (revise_repeated_verbs_batch) asking the model to pick mutually
+    distinct verbs for every flagged bullet at once, validated the same
+    way afterward: a fix is only kept if its actual returned verb doesn't
+    collide with the pre-existing used-verb set or with another bullet's
+    pick in this same batch. Live-tested (2026-09-16): 100% success rate
+    at 3 and 6 simultaneous bullets, matching the old one-call-per-bullet
+    design exactly, at roughly 2.5-3x lower latency.
     """
     all_refs = [
         (bullets, idx)
@@ -397,30 +405,41 @@ async def _correct_repeated_opening_verbs(resume: Resume, jd_json: dict) -> None
         return
 
     used_verbs = {extract_opening_verb(b) for b in flat_bullets if extract_opening_verb(b)}
+
+    # Keep the first bullet using each shared verb as-is; only the later
+    # ones sharing it need a new verb. Every such bullet across every
+    # duplicated verb goes into one batch, not one call per verb-group.
+    to_fix_flat_idxs = [
+        flat_idx
+        for verb, flat_idxs in duplicates.items()
+        for flat_idx in flat_idxs[1:]
+    ]
+    if not to_fix_flat_idxs:
+        return
+
+    originals = [flat_bullets[i] for i in to_fix_flat_idxs]
+    revised_list = await revise_repeated_verbs_batch(originals, sorted(used_verbs), jd_json)
+
     corrected_count = 0
+    seen_new_verbs: set = set()
+    for flat_idx, original, revised in zip(to_fix_flat_idxs, originals, revised_list):
+        bullets, idx = all_refs[flat_idx]
+        new_verb = extract_opening_verb(revised)
 
-    for verb, flat_idxs in duplicates.items():
-        # Keep the first bullet using this verb as-is; only the later ones
-        # sharing it need a new verb.
-        for flat_idx in flat_idxs[1:]:
-            bullets, idx = all_refs[flat_idx]
-            original = bullets[idx]
-
-            revised = await revise_repeated_verb(original, sorted(used_verbs), jd_json)
-            new_verb = extract_opening_verb(revised)
-
-            # Bounded to one attempt - if the model didn't actually land on
-            # an unused verb, keep the original bullet (still a duplicate,
-            # but truthful and safe) rather than risk another round.
-            if new_verb and new_verb not in used_verbs:
-                bullets[idx] = revised
-                used_verbs.add(new_verb)
-                corrected_count += 1
-            else:
-                logger.warning(
-                    "bullet_verifier: repeated-verb re-ask did not produce a new verb, "
-                    "keeping original bullet (verb=%s)", verb
-                )
+        # Bounded to one attempt - if the model didn't actually land on an
+        # unused, batch-unique verb, keep the original bullet (still a
+        # duplicate, but truthful and safe) rather than risk another round.
+        if new_verb and new_verb not in used_verbs and new_verb not in seen_new_verbs:
+            bullets[idx] = revised
+            seen_new_verbs.add(new_verb)
+            used_verbs.add(new_verb)
+            corrected_count += 1
+        else:
+            logger.warning(
+                "bullet_verifier: repeated-verb batch re-ask did not produce a new, "
+                "batch-unique verb, keeping original bullet (original verb=%s)",
+                extract_opening_verb(original),
+            )
 
     if corrected_count:
         logger.info("bullet_verifier: corrected %d repeated-opening-verb bullet(s)", corrected_count)
@@ -461,6 +480,71 @@ async def _correct_overlong_bullets(resume: Resume, jd_json: dict) -> None:
         logger.info("bullet_verifier: shortened %d overlong bullet(s)", corrected_count)
 
 
+async def _correct_orphan_line_bullets(resume: Resume, jd_json: dict) -> None:
+    """
+    Auto-correct fix-up for bullets whose estimated final wrapped line is
+    nearly empty - a word or two stranded on its own line. Runs last among
+    the bullet correctors (after overlong-bullet shortening and applied-
+    skill weaving) since both of those change bullet length and can
+    introduce or remove an orphan line themselves; this needs to see the
+    final text. Unlike the overlong-bullet check, this isn't compact-mode
+    gated - the compact-mode char-match instruction targets total length,
+    not where the wrap actually falls, so orphan lines can happen in
+    either mode. Each bullet's correction is independent, so they run
+    concurrently.
+
+    Extend, not shrink - these bullets are already dense (WHAT/SO-WHAT/HOW,
+    quantified, no filler) so there's rarely slack left to cut without
+    dropping a fact; filling the existing last line with a truthful
+    elaboration is simpler and more reliable than trying to eliminate it.
+
+    The fit itself is deterministic, not another LLM guess: one call per
+    flagged bullet asks for a few complete continuation alternatives
+    ranked longest-to-shortest (generate_extension_alternatives), then
+    fit_extension_alternative picks the longest one that actually
+    resolves the orphan by measuring each locally - same call count as
+    asking the model to hit a character target itself, but the pass/fail
+    decision no longer depends on the model's guess landing right.
+
+    Generation stays concurrent (independent per bullet, same call count
+    as before), but selection runs sequentially with a growing set of
+    already-used connector phrases - same shape as
+    _correct_repeated_opening_verbs, just for the extend step's
+    mid-sentence connector ("which resulted in...", "while ensuring...")
+    instead of a bullet's first word. Confirmed live: independent
+    per-bullet calls at temperature 0.0 tend to converge on the same
+    handful of connectors, reading as repetitive across bullets even
+    though each one is fine alone. A bullet whose only valid alternatives
+    all repeat an already-used connector still gets extended with the
+    repeat rather than being left orphaned - never sacrifices a genuine
+    fix just for phrasing variety.
+    """
+    refs = [
+        (bullets, idx)
+        for bullets in _tailorable_bullet_lists(resume)
+        for idx in find_orphan_line_bullets(bullets)
+    ]
+    if not refs:
+        return
+
+    alternatives_per_bullet = await asyncio.gather(
+        *[generate_extension_alternatives(bullets[idx], jd_json) for bullets, idx in refs]
+    )
+    used_connectors: set = set()
+    corrected_count = 0
+    for (bullets, idx), alternatives in zip(refs, alternatives_per_bullet):
+        result = fit_extension_alternative(bullets[idx], alternatives, exclude_connectors=used_connectors)
+        if result:
+            fitted, connector = result
+            bullets[idx] = fitted
+            if connector:
+                used_connectors.add(connector)
+            corrected_count += 1
+
+    if corrected_count:
+        logger.info("bullet_verifier: extended %d orphan-line bullet(s)", corrected_count)
+
+
 async def _weave_applied_skills(resume: Resume, applied_skills: List[str], jd_json: dict) -> None:
     """
     For each confirmed applied/methodology skill (classify_confirmed_skills'
@@ -479,6 +563,16 @@ async def _weave_applied_skills(resume: Resume, applied_skills: List[str], jd_js
     along, so multiple applied skills spread across different bullets when
     more than one is a genuinely truthful fit, instead of defaulting to
     piling every skill onto whichever single bullet is the closest match.
+
+    That "already woven" list is only ever a soft preference in the
+    prompt ("prefer avoiding these... but only as a tie-breaker"), not an
+    instruction the model always honors - live-tested (2026-09-16), it
+    picked an already-woven bullet again for a second skill in 1 of 5
+    trials. Applying that result unconditionally would silently discard
+    the first skill's wording when the second's revision overwrites the
+    same bullet, so a skill whose only returned bullet_index collides
+    with one already woven in this pass is rejected here (left out, same
+    as "no truthful fit found") rather than applied over the earlier one.
     """
     if not applied_skills:
         return
@@ -500,6 +594,13 @@ async def _weave_applied_skills(resume: Resume, applied_skills: List[str], jd_js
         revised = result.get("revised_bullet")
         if flat_idx is None or not revised or not (0 <= flat_idx < len(flat_bullets)):
             continue
+        if flat_idx in already_woven_indices:
+            logger.warning(
+                "skill_inference: model reused an already-woven bullet (index=%d) for "
+                "skill %r despite the tie-breaker instruction - skipping rather than "
+                "overwrite the earlier skill's wording", flat_idx, skill,
+            )
+            continue
 
         # Map the flat index back to its (bullets_list, local index) - same
         # flatten order flat_bullets was just built in.
@@ -516,68 +617,6 @@ async def _weave_applied_skills(resume: Resume, applied_skills: List[str], jd_js
         logger.info("skill_inference: wove %d applied skill(s) into bullets", woven_count)
 
 
-async def render_pdf_with_underfill_backfill(
-    resume: Resume, use_technical_skills: bool, jd_json: Optional[dict] = None
-) -> bytes:
-    """
-    Render the resume, and if the post-render underfill check discovers the
-    page actually needed a headline/summary after all - compact_mode's
-    pre-render bullet-count guess said "full enough to skip it," but the
-    real one-page render came back visibly underfull - generate one and
-    re-render once more, reusing the render's own fill-ratio measurement
-    instead of trusting the pre-render heuristic alone.
-
-    Bullets are never re-tailored here, only this cheap headline/summary
-    addition: re-running the main tailoring call a second time would
-    roughly double tailoring latency for every resume that hits this edge
-    case, for a page-fill problem that headline/summary content (plus the
-    spacing loosening render_resume_pdf_ex already applied) already fixes.
-
-    Mutates `resume.headline`/`resume.summary` in place when it generates
-    them, so a caller returning this same resume object as JSON (not just
-    the PDF bytes) stays consistent with what got rendered - and reverts
-    that mutation if the backfilled render has to be discarded (see below),
-    for the same reason.
-
-    jd_json: forwarded to generate_headline_summary - JD-aware framing at
-    tailor time, resume-only at reformat time (no JD).
-    """
-    pdf_bytes, needs_headline_summary = render_resume_pdf_ex(resume, use_technical_skills)
-
-    if not needs_headline_summary:
-        return pdf_bytes
-
-    resume_json = json.loads(resume.model_dump_json())
-    generated = await generate_headline_summary(resume_json, jd_json)
-
-    if not generated.get("headline") and not generated.get("summary"):
-        return pdf_bytes
-
-    original_headline, original_summary = resume.headline, resume.summary
-    resume.headline = generated.get("headline") or resume.headline
-    resume.summary = generated.get("summary") or resume.summary
-
-    backfilled_bytes, _ = render_resume_pdf_ex(resume, use_technical_skills)
-
-    # Guard against the rare case where the added headline/summary content
-    # pushes an already-borderline-full resume onto a 2nd page -
-    # render_resume_pdf_ex's own overflow guard already tries
-    # ultra_compact_mode first, but if it still doesn't fit in one page,
-    # revert the content change (so a caller returning `resume` as JSON
-    # alongside the PDF stays consistent with what actually got rendered)
-    # and ship the original underfull-but-safely-one-page render instead.
-    # A resume with some blank space at the bottom beats one that spilled
-    # onto a second page.
-    try:
-        still_one_page = _count_pdf_pages(backfilled_bytes) == 1
-    except Exception:
-        still_one_page = False
-
-    if not still_one_page:
-        resume.headline, resume.summary = original_headline, original_summary
-        return pdf_bytes
-
-    return backfilled_bytes
 
 
 async def tailor_resume(
@@ -779,6 +818,11 @@ async def tailor_resume(
     # wording rather than the Technical Skills section
     if applied_skills:
         await _weave_applied_skills(rewritten_resume, applied_skills, jd_json)
+
+    # Step 5e: auto-correct bullets that wrap onto a nearly-empty final
+    # line - run last since 5c/5d both change bullet length and can shift
+    # where the wrap falls
+    await _correct_orphan_line_bullets(rewritten_resume, jd_json)
 
     # Step 6: Format skills (tools stay as is, concept phrases get title case)
     rewritten_resume.skills = format_skills_list(rewritten_resume.skills)

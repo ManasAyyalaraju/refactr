@@ -18,8 +18,10 @@ from core.timing import timed_stage
 from models.resume_models import Resume
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.job_parser import parse_job_description_from_text
-from services.tailor_engine import tailor_resume, ensure_technical_skills, render_pdf_with_underfill_backfill
-from services.skill_inference import match_inferred_skills_to_jd
+from services.tailor_engine import tailor_resume, ensure_technical_skills
+from services.pdf_writer import render_resume_pdf
+from services.skill_inference import match_inferred_skills_to_jd, _resume_background_text
+from services.bullet_verifier import _contains_skill
 from services.llm_client import classify_confirmed_skills
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ def _compute_compatibility(
     resume_skills: List[str],
     jd_data: Dict[str, Any],
     credited_skills: Optional[List[str]] = None,
+    background_text: str = "",
 ) -> Dict[str, Any]:
     """
     Calculate compatibility using a weighted formula:
@@ -75,6 +78,18 @@ def _compute_compatibility(
     broadly-worded JD requirement (e.g. "data modeling techniques"). That
     broader wording is never written onto the resume itself - this only
     affects the score/matched-list, not resume content.
+
+    background_text: full resume text (skill_inference._resume_background_text
+    - headline/summary/education major/experience+project titles and
+    bullets/skills/certifications), also searched for a literal mention of
+    each JD skill. resume_skills alone only covers the Skills/Technical
+    Skills section - a real skill mentioned only in bullet text (e.g.
+    "Linux" used throughout experience bullets but never listed under
+    Technical Skills) was previously invisible to this scorer even though
+    it's genuinely present on the resume. This only ever credits a LITERAL
+    text match via the same word-boundary-safe _contains_skill matcher
+    bullet_verifier.py already relies on elsewhere - never an inferred or
+    assumed skill the resume doesn't actually state.
     """
     must_have = jd_data.get("must_have_skills", []) or []
     nice_to_have = jd_data.get("nice_to_have_skills", []) or []
@@ -89,10 +104,17 @@ def _compute_compatibility(
     must_norm = list(must_map.keys())
     nice_norm = list(nice_map.keys())
 
-    matched_must = [must_map[s] for s in must_norm if s in resume_norm or s in credited_norm]
-    matched_nice = [nice_map[s] for s in nice_norm if s in resume_norm or s in credited_norm]
-    missing_must = [must_map[s] for s in must_norm if s not in resume_norm and s not in credited_norm]
-    missing_nice = [nice_map[s] for s in nice_norm if s not in resume_norm and s not in credited_norm]
+    def _covered(norm_key: str, original: str) -> bool:
+        return (
+            norm_key in resume_norm
+            or norm_key in credited_norm
+            or (background_text and _contains_skill(background_text, original))
+        )
+
+    matched_must = [must_map[s] for s in must_norm if _covered(s, must_map[s])]
+    matched_nice = [nice_map[s] for s in nice_norm if _covered(s, nice_map[s])]
+    missing_must = [must_map[s] for s in must_norm if not _covered(s, must_map[s])]
+    missing_nice = [nice_map[s] for s in nice_norm if not _covered(s, nice_map[s])]
 
     total_must = len(must_norm)
     total_nice = len(nice_norm)
@@ -317,7 +339,8 @@ async def tailor_resume_from_pdf(
 
         # 3b) Compatibility report
         jd_data = jd.model_dump()
-        compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data)
+        background_text = _resume_background_text(tailored_resume)
+        compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, background_text=background_text)
 
         # Semantic credit pass: literal matching above only catches a JD
         # requirement worded identically to a resume skill. Requirements
@@ -352,16 +375,16 @@ async def tailor_resume_from_pdf(
                 matches = await match_inferred_skills_to_jd(still_missing, candidate_skills)
             credited = [m["jd_skill"] for m in matches]
             if credited:
-                compatibility = _compute_compatibility(tailored_resume.skills or [], jd_data, credited)
+                compatibility = _compute_compatibility(
+                    tailored_resume.skills or [], jd_data, credited, background_text=background_text
+                )
 
         timings_header = json.dumps(timings)
 
         # 4) Output mode
         if output.lower() == "pdf":
             with timed_stage("render_pdf", timings):
-                pdf_bytes = await render_pdf_with_underfill_backfill(
-                    tailored_resume, use_technical_skills, jd_json=jd_data
-                )
+                pdf_bytes = render_resume_pdf(tailored_resume, use_technical_skills)
             return StreamingResponse(
                 iter([pdf_bytes]),
                 media_type="application/pdf",
