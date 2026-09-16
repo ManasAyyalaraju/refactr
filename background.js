@@ -20271,8 +20271,17 @@ ${suffix}`;
             formData.append("jd_text", message.jobDescription);
             formData.append("output", output);
             formData.append("resume_format", message.resumeFormat);
-            if (message.additionalSkills && message.additionalSkills.length > 0) {
-              formData.append("additional_skills", JSON.stringify(message.additionalSkills));
+            if (message.additionalHardSkills && message.additionalHardSkills.length > 0) {
+              formData.append("additional_hard_skills", JSON.stringify(message.additionalHardSkills));
+            }
+            if (message.additionalAppliedSkills && message.additionalAppliedSkills.length > 0) {
+              formData.append("additional_applied_skills", JSON.stringify(message.additionalAppliedSkills));
+            }
+            if (message.additionalUnclassifiedSkills && message.additionalUnclassifiedSkills.length > 0) {
+              formData.append(
+                "additional_unclassified_skills",
+                JSON.stringify(message.additionalUnclassifiedSkills)
+              );
             }
             return formData;
           };
