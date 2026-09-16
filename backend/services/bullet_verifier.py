@@ -1,12 +1,14 @@
 """
-Deterministic truthfulness guardrail for tailored bullets. No LLM calls here.
+Deterministic quality/truthfulness guardrails for tailored bullets. No LLM
+calls here - each check is a plain string/regex test; llm_client.py owns the
+matching correction call for anything a check flags.
 
-Scope is intentionally narrow: general fabrication detection is unbounded and
-fuzzy. What actually happens in practice is the model borrowing a JD-desired
-skill the candidate doesn't have, to inflate the match - so that's the one
-thing this checks for: does a tailored bullet introduce a JD skill that
-wasn't in the original bullet and isn't anywhere in the candidate's own
-skill lists?
+Truthfulness scope is intentionally narrow: general fabrication detection is
+unbounded and fuzzy. What actually happens in practice is the model
+borrowing a JD-desired skill the candidate doesn't have, to inflate the
+match - so that's the one thing find_unauthorized_terms checks for: does a
+tailored bullet introduce a JD skill that wasn't in the original bullet and
+isn't anywhere in the candidate's own skill lists?
 """
 import re
 from functools import lru_cache
@@ -84,3 +86,102 @@ def verify_bullets(
             violations[i] = flagged
 
     return violations
+
+
+# Phrases that signal a bullet is describing a duty rather than an
+# accomplishment - checked as a prefix match, not a substring match,
+# since "Responsible for" mid-sentence isn't the same failure as opening
+# with it.
+_WEAK_OPENER_PHRASES = (
+    "responsible for",
+    "in charge of",
+    "duties included",
+    "duties include",
+    "tasked with",
+    "worked on",
+    "worked with",
+    "helped with",
+    "helped to",
+    "assisted with",
+    "assisted in",
+    "participated in",
+    "involved in",
+    "was responsible",
+    "charged with",
+)
+
+_GERUND_FIRST_WORD_RE = re.compile(r"^[A-Za-z]+ing$")
+
+
+def has_weak_opener(bullet: str) -> bool:
+    """
+    True if a bullet opens with a passive/responsibility phrase (e.g.
+    "Responsible for...") or a gerund as its first word (e.g. "Managing...",
+    "Leading...") instead of a strong action verb. Intentionally just this
+    one narrow pattern - not a general grammar checker - since it's the
+    specific failure the "begin with an action verb" rule is meant to catch.
+    """
+    if not bullet or not bullet.strip():
+        return False
+    text = bullet.strip().lower()
+    if any(text.startswith(phrase) for phrase in _WEAK_OPENER_PHRASES):
+        return True
+    words = text.split()
+    first_word = words[0] if words else ""
+    first_word = re.sub(r"[^a-z]", "", first_word)
+    return bool(_GERUND_FIRST_WORD_RE.match(first_word))
+
+
+def find_weak_opener_bullets(bullets: List[str]) -> List[int]:
+    """Indices of bullets (in the given order) that open weakly."""
+    return [i for i, b in enumerate(bullets) if has_weak_opener(b)]
+
+
+def extract_opening_verb(bullet: str) -> str:
+    """
+    First word of a bullet, normalized (letters only, lowercased) for
+    duplicate-opening-verb comparison. Deliberately literal - "Developed"
+    and "Develop" are treated as different verbs, since the goal is just to
+    catch two bullets that open with the exact same word.
+    """
+    if not bullet or not bullet.strip():
+        return ""
+    first_word = bullet.strip().split(None, 1)[0]
+    return re.sub(r"[^A-Za-z]", "", first_word).lower()
+
+
+def find_duplicate_opening_verbs(bullets: List[str]) -> Dict[str, List[int]]:
+    """
+    Map each opening verb shared by 2+ bullets to the indices (in the given
+    order) of every bullet that opens with it. Verbs used exactly once are
+    omitted - nothing to fix there.
+    """
+    by_verb: Dict[str, List[int]] = {}
+    for i, bullet in enumerate(bullets):
+        verb = extract_opening_verb(bullet)
+        if not verb:
+            continue
+        by_verb.setdefault(verb, []).append(i)
+    return {verb: idxs for verb, idxs in by_verb.items() if len(idxs) > 1}
+
+
+# Nothing in this pipeline renders an individual bullet to measure its
+# actual wrapped line count - the only real rendered measurement is the
+# whole-PAGE fill ratio in pdf_writer.py's roomy_mode stepping. These
+# character counts are a calibrated proxy instead: ~95 chars/line, derived
+# from resume_template.tex's 9.3pt font and ~7.3in effective bullet width
+# (0.5in margins, 14pt itemize indent) and cross-checked against
+# llm_client.py's pre-existing compact-mode compression targets, where a
+# bullet around 190 chars was already being treated as the point it starts
+# wrapping onto a 3rd line. Approximate, not exact font-metric math.
+CHARS_PER_LINE_ESTIMATE = 95
+SPARSE_BULLET_CHAR_TARGET = (160, 220)  # ~2 lines - the preferred range
+SPARSE_BULLET_CHAR_CEILING = 3 * CHARS_PER_LINE_ESTIMATE  # ~285 - 3-line hard ceiling
+
+
+def find_overlong_bullets(bullets: List[str], char_ceiling: int = SPARSE_BULLET_CHAR_CEILING) -> List[int]:
+    """
+    Indices of bullets that exceed a hard character ceiling - the calibrated
+    proxy above for exceeding a target line count.
+    """
+    return [i for i, b in enumerate(bullets) if b and len(b) > char_ceiling]

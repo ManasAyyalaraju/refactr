@@ -72,6 +72,7 @@ def _trim_resume_strings(resume: Resume) -> Resume:
         edu.gpa = _strip_text(edu.gpa)
         edu.location = _strip_text(edu.location)
         edu.scholarships = _strip_text(edu.scholarships)
+        edu.relevant_coursework = _strip_text(edu.relevant_coursework)
 
     if resume.additional_info:
         resume.additional_info.computer_skills = _strip_text(resume.additional_info.computer_skills)

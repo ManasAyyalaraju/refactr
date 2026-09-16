@@ -22,6 +22,23 @@ class Settings(BaseSettings):
     # classification, inferred-skill suggestion).
     openai_model_matching: str = "gpt-4.1-mini"
 
+    # classify_confirmed_skills and suggest_plausible_skills_grouped both
+    # draw the same tool-vs-methodology boundary (e.g. "ETL Processes" is a
+    # process, not a tool, even though it sounds technical). Compared three
+    # tiers on this specific boundary: gpt-4o-mini gets it wrong consistently
+    # (4/4 test runs, files it under Tools); gpt-5-mini gets it right
+    # consistently (4/4) but as a reasoning model costs ~17x more and runs
+    # ~21x slower per call (~1,470 hidden reasoning tokens on a simple
+    # classification); gpt-4.1-mini never gets it wrong - it just omits the
+    # term entirely rather than committing to a bucket (4/4) - at the same
+    # latency/cost as gpt-4o-mini. Chosen deliberately: omitting an
+    # ambiguous suggestion is an acceptable outcome (the picker already
+    # treats "not suggested" as normal for anything not confidently
+    # groundable), while filing it under the wrong bucket isn't - and
+    # gpt-5-mini's cost/latency profile isn't worth it pipeline-adjacent
+    # just to resolve rather than omit the rare ambiguous case.
+    openai_model_classification: str = "gpt-4.1-mini"
+
     # Passed straight to AsyncOpenAI's built-in retry/backoff for transient
     # errors (rate limits, timeouts) - no separate retry library needed.
     openai_max_retries: int = 2

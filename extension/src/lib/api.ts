@@ -8,8 +8,17 @@ export interface TailorRequest {
   jobDescription: string;
   resumeFormat: 'regular' | 'technical';
   // Skills the candidate explicitly confirmed (from the inferred-skills
-  // picker) - merged into the resume's truthful skill pool before tailoring.
-  additionalSkills?: string[];
+  // picker), pre-split by panel-app.ts's splitConfirmedSkillsByType:
+  // - additionalHardSkills: tools/languages/certifications - merged into
+  //   the resume's Technical Skills.
+  // - additionalAppliedSkills: methodologies/techniques - woven into
+  //   bullet wording instead.
+  // - additionalUnclassifiedSkills: confirmed skills from a resume whose
+  //   inferred_skills predates the tool-vs-methodology split - classified
+  //   server-side.
+  additionalHardSkills?: string[];
+  additionalAppliedSkills?: string[];
+  additionalUnclassifiedSkills?: string[];
 }
 
 export interface CompatibilityReport {
@@ -35,7 +44,9 @@ export async function tailorResumePdf({
   fileName,
   jobDescription,
   resumeFormat,
-  additionalSkills,
+  additionalHardSkills,
+  additionalAppliedSkills,
+  additionalUnclassifiedSkills,
 }: TailorRequest): Promise<TailorResult> {
   // Routed through the background service worker - a direct fetch() here
   // would run in the host page's execution context and get silently blocked
@@ -49,7 +60,9 @@ export async function tailorResumePdf({
     fileName,
     jobDescription,
     resumeFormat,
-    additionalSkills,
+    additionalHardSkills,
+    additionalAppliedSkills,
+    additionalUnclassifiedSkills,
   });
 
   if (!response?.ok) {

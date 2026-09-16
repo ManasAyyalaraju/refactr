@@ -14,7 +14,11 @@ export interface BaseResumeRow {
   parsed_data: Record<string, unknown> | null;
   // Plausible-but-unlisted skills inferred at save time (Phase 1). Used to
   // offer a confirm/inject picker when they overlap with a job's skills.
-  inferred_skills: string[] | null;
+  // New shape ({tools, methodologies}, pre-tagged tool-vs-methodology at
+  // suggestion time) for a resume reformatted/reparsed after that split
+  // existed; plain string[] for one saved before then, with no type info
+  // yet - see flattenInferredSkills/lookupInferredSkillType in panel-app.ts.
+  inferred_skills: string[] | { tools: string[]; methodologies: string[] } | null;
 }
 
 function randomId(): string {

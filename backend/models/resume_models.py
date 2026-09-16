@@ -18,6 +18,7 @@ class EducationEntry(BaseModel):
     gpa: Optional[str] = None              # e.g. "3.8/4.0"
     location: Optional[str] = None
     scholarships: Optional[str] = None     # e.g. "Academic Excellence Scholarship, Carlton J Siegler Scholarship"
+    relevant_coursework: Optional[str] = None  # e.g. "Systems Analysis and Design, Data Governance"
 
 
 class Experience(BaseModel):

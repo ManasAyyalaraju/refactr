@@ -133,14 +133,14 @@
   \vspace{1pt}
 }
 
-\newcommand{\resumeProjectHeading}[3]{
+\newcommand{\resumeProjectHeading}[2]{
   \noindent
   \begin{minipage}[t]{0.7\textwidth}
-    \textbf{#1} -- \textit{#2}
+    #1
   \end{minipage}
   \hfill
   \begin{minipage}[t]{0.25\textwidth}
-    \raggedleft #3
+    \raggedleft #2
   \end{minipage}
   \vspace{1pt}
 }
@@ -217,6 +217,10 @@ VAR{resume.summary|escape_latex}
 \resumeEducation{VAR{first_line}}{VAR{date_text}}
 %{ endif %}
 
+%{ if edu.relevant_coursework %}
+\noindent Relevant Coursework: VAR{edu.relevant_coursework|escape_latex}
+%{ endif %}
+
 %{ if edu.scholarships %}
 \noindent Scholarships: VAR{edu.scholarships|escape_latex}
 %{ endif %}
@@ -261,7 +265,11 @@ VAR{resume.summary|escape_latex}
 %{ if resume.projects %}
 \section*{PROJECTS}
 %{ for proj in resume.projects %}
-\resumeProjectHeading{VAR{proj.name|escape_latex}}{%{ if proj.role %}VAR{proj.role|escape_latex}%{ endif %}}{%{ if proj.semester %}VAR{proj.semester|escape_latex}%{ endif %}}
+%{ set proj_title = '\\textbf{' ~ proj.name|escape_latex ~ '}' %}
+%{ if proj.role %}
+  %{ set proj_title = proj_title ~ ' -- \\textit{' ~ proj.role|escape_latex ~ '}' %}
+%{ endif %}
+\resumeProjectHeading{VAR{proj_title}}{%{ if proj.semester %}VAR{proj.semester|escape_latex}%{ endif %}}
 %{ if proj.bullets %}
 \begin{itemize}
 %{ for bullet in proj.bullets %}

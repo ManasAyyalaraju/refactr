@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from core.config import settings
 from models.resume_models import Resume, TechnicalSkillCategory
 from services.domain_prompts import get_domain_prompt, format_domain_guidance
+from services.bullet_verifier import SPARSE_BULLET_CHAR_TARGET, SPARSE_BULLET_CHAR_CEILING
 
 # Validate API key on import
 try:
@@ -152,44 +153,40 @@ Original (240 chars): "Spread client financials by meticulously analyzing tax re
         example2 = '✅ Good (178 chars): "Performed competitor analysis for two client engagements with $10-15M revenue, identifying 8+ comparable companies to benchmark valuations and align pricing expectations for target businesses"'
         headline_summary_instruction = ""
     else:
-        primary_rule = """
+        primary_rule = f"""
 =========================================
-⚠️ PRIMARY RULE: EXPAND CONTENT TO FILL PAGE ⚠️
+⚠️ PRIMARY RULE: TAILOR CONTENT TO THE JOB - EXPAND ONLY WITH TRUTHFUL DETAIL ⚠️
 =========================================
 
-RESUME TYPE: SPARSE - EXPAND bullets and ADD headline/summary
+RESUME TYPE: SPARSE - tailor bullets to the JD, let them run a bit longer, and ADD/REWRITE a JD-focused headline+summary
 
 **YOUR PRIMARY JOB:**
-1. **ADD HEADLINE**: Create a professional headline (one impactful sentence, 50-80 chars)
-2. **ADD SUMMARY**: Write a compelling 2-3 sentence summary (150-250 chars total)
-3. **EXPAND BULLETS**: Make each bullet MORE detailed and comprehensive
-   - Target 180-250 characters per bullet (2.5-3 lines)
-   - Add context, technologies, methodologies, and impact
-   - Include stakeholder information where relevant
-   - Describe scope, team size, and business outcomes
-   - Use metrics and quantifiable results
+1. **HEADLINE**: Write or rewrite ONE impactful sentence (50-80 chars) that foregrounds the candidate's JD-relevant strengths
+2. **SUMMARY**: Write or rewrite a 2-3 sentence summary (150-250 chars total) highlighting the candidate's truthful strengths most relevant to THIS job
+3. **TAILOR BULLETS**: Rework each bullet's wording and emphasis for this JD - target {SPARSE_BULLET_CHAR_TARGET[0]}-{SPARSE_BULLET_CHAR_TARGET[1]} characters (~2 lines), never exceed {SPARSE_BULLET_CHAR_CEILING} characters (~3 lines) - adding only detail that's already true
 
-**HOW TO EXPAND BULLETS:**
-✅ GOOD: Add specific technologies and tools used
-✅ GOOD: Include team size, scope, and stakeholders
-✅ GOOD: Add business context and outcomes
-✅ GOOD: Expand on methodologies and approaches
-✅ GOOD: Include comprehensive metrics and impact details
-✅ GOOD: Make bullets fill 2.5-3 complete lines on the page
+Page fullness for a sparse resume comes from the headline/summary above,
+from letting bullets breathe a bit more (up to 3 lines), and from layout -
+NOT from inventing facts that aren't already grounded in the resume.
 
-**Example of GOOD expansion:**
-Original (120 chars): "Supervised sorting and packaging of donated meals and essentials"
-✅ Expanded (210 chars): "Supervised and coordinated a team of 10+ volunteers in the efficient sorting, packaging, and distribution of donated meals and essential supplies, ensuring timely delivery to 15+ local charities and hunger relief programs across the Dallas-Fort Worth region"
+**HOW TO EXPAND BULLETS (TRUTHFULLY):**
+✅ GOOD: Swap in JD-relevant keywords and emphasis the candidate can truthfully claim
+✅ GOOD: Sharpen the verb and impact framing of what's already there
+✅ GOOD: Spell out technologies, tools, or methods already named elsewhere in the resume
+✅ GOOD: Surface a metric or scale already stated elsewhere in the resume, if relevant to this bullet
+❌ BAD: Inventing team sizes, geographies, stakeholders, or scope not in the original
+❌ BAD: Padding a bullet with vague filler just to add length
 """
-        examples_header = "**SPARSE RESUME - EXPAND with detail:**"
-        example1 = '✅ Good (230 chars): "Developed and engineered 5+ comprehensive IT mobile applications and catalog items using modern frameworks including React Native and TypeScript, resulting in a significant 15% increase in user engagement metrics, positive user ratings, and enhanced customer satisfaction across multiple platforms"'
-        example2 = '✅ Good (195 chars): "Supported and facilitated technical sales cycles across 10+ national accounts, collaborating with cross-functional teams to align secure data integration and governance solutions with client business objectives"'
+        examples_header = "**SPARSE RESUME - expand with real detail, not filler:**"
+        example1 = '✅ Good (175 chars): "Coordinated sorting, packaging, and distribution of donated meals and essentials, partnering with local organizations to ensure accurate weekly delivery across the service area"'
+        example2 = '✅ Good (160 chars): "Supported technical sales cycles across 10+ national accounts, aligning data integration solutions with client business objectives and priorities"'
         headline_summary_instruction = """
-**HEADLINE AND SUMMARY GENERATION (REQUIRED FOR SPARSE RESUMES):**
-- **headline**: Write ONE impactful sentence (50-80 chars) that captures the candidate's value proposition
+**HEADLINE AND SUMMARY (REQUIRED - WRITE/REWRITE THESE TAILORED TO THIS JOB):**
+- **headline**: ONE impactful sentence (50-80 chars) that foregrounds the candidate's strengths most relevant to THIS job
   Example: "Information Systems Student | Cybersecurity Enthusiast | Tech Leader"
-- **summary**: Write 2-3 sentences (150-250 chars) highlighting key strengths, skills, and career focus
+- **summary**: 2-3 sentences (150-250 chars total) highlighting the candidate's truthful strengths, skills, and experience most relevant to THIS job description
   Example: "Information Technology student with hands-on experience in cybersecurity education and community impact initiatives. Skilled in WatsonX AI, data analysis, and volunteer leadership. Passionate about leveraging technology to solve real-world challenges in food security and information systems."
+- Use ONLY facts already present in the resume - do not invent achievements, employers, or skills to fill these in.
 """
 
     prompt = f"""
@@ -217,11 +214,16 @@ TAILORING RULES
 =========================================
 
 1. **KEEP EXACT BULLET COUNT** - Same number of bullets per job/project as original
-2. {"**MATCH CHARACTER COUNTS** - Each tailored bullet should be within ±15 chars of original" if is_compact else "**EXPAND BULLETS** - Each bullet should be 180-250 characters (2.5-3 lines)"}
-3. {"**SWAP, DON'T ADD** - Replace generic terms with JD-specific keywords" if is_compact else "**ADD DETAIL** - Include technologies, context, metrics, and impact"}
-4. **PRESERVE STRUCTURE** - Do NOT change job titles, companies, dates, or locations
-5. **KEEP METRICS** - Preserve all numbers and percentages from original bullets
-6. **STAY TRUTHFUL** - Only use skills from the resume's skills list
+2. {"**MATCH CHARACTER COUNTS** - Each tailored bullet should be within ±15 chars of original" if is_compact else "**EXPAND WITH TRUTHFUL DETAIL** - Add only detail already grounded in the original bullet or resume; never invent new specifics"}
+3. {"**SWAP, DON'T ADD** - Replace generic terms with JD-specific keywords" if is_compact else "**TAILOR, DON'T ADD** - Replace generic terms with JD-specific keywords the candidate can truthfully claim"}
+4. **START WITH A STRONG ACTION VERB** - Never open with "Responsible for", "Worked on", "Helped with", or a gerund ("Managing...", "Leading...") as the first word - lead with a specific past-tense action verb
+5. **VARY YOUR OPENING VERBS** - Do not start two bullets on the same resume with the same verb; use a different one for each
+6. **WHAT, SO WHAT, HOW** - Convey the achievement (what you did), its impact (so what), and briefly how - don't just list a responsibility
+7. **QUANTIFY WHEN TRUE** - Include a real number, percentage, or scale already grounded in the original bullet or resume when available; never invent a metric that isn't already there
+8. {"**1 LINE PREFERRED, 2 LINES MAX** - Keep each bullet to at most 2 lines; a single concise line is preferred over two" if is_compact else f"**2 LINES PREFERRED, 3 LINES MAX** - Target {SPARSE_BULLET_CHAR_TARGET[0]}-{SPARSE_BULLET_CHAR_TARGET[1]} characters; never exceed {SPARSE_BULLET_CHAR_CEILING} characters"}
+9. **PRESERVE STRUCTURE** - Do NOT change job titles, companies, dates, or locations
+10. **KEEP METRICS** - Preserve all numbers and percentages from original bullets
+11. **STAY TRUTHFUL** - Only use skills from the resume's skills list
 
 {headline_summary_instruction}
 
@@ -251,7 +253,12 @@ JOB DESCRIPTION JSON:
 {json.dumps(job_json, indent=2)}
 """
 
-    system_message = f"You are a resume editor specializing in {industry}. Your PRIMARY goal: tailor content while matching original bullet lengths character-for-character."
+    system_message = (
+        f"You are a resume editor specializing in {industry}. Your PRIMARY goal: tailor content "
+        f"to the job description while keeping bullet lengths close to the original. Every bullet "
+        f"must open with a strong, distinct action verb (never a passive phrase or a gerund), "
+        f"convey what was done and its impact, and stay at most 2 lines (1 preferred)."
+    )
 
     response = await client.chat.completions.parse(
         model=settings.openai_model_generate,
@@ -271,12 +278,19 @@ class _HeadlineSummary(BaseModel):
     summary: Optional[str] = None
 
 
-async def generate_headline_summary(resume_json: dict) -> dict:
+async def generate_headline_summary(resume_json: dict, jd_json: Optional[dict] = None) -> dict:
     """
     Generate ONLY a headline and summary from existing resume content.
-    - No JD context
     - Do NOT alter bullets or any other fields
     - Keep it concise and truthful to provided data
+
+    jd_json: when given, the headline/summary are written to foreground
+    whichever of the candidate's truthful strengths are most relevant to
+    this job - same JD-aware framing rewrite_resume_sections' sparse branch
+    uses for a resume tailored from the start. Omitted (reformat time, or a
+    post-render underfill backfill for an already-compact-flagged tailor
+    that had no JD-aware pass to begin with), it's generated from the
+    resume alone with no JD framing.
     """
     if not client:
         return {"headline": None, "summary": None}
@@ -287,12 +301,24 @@ async def generate_headline_summary(resume_json: dict) -> dict:
         "bullets or any other fields. Keep it concise and professional."
     )
 
+    jd_context = (
+        f"""
+JOB DESCRIPTION (for framing only - do not copy its wording or invent skills from it):
+TITLE: {jd_json.get("title", "N/A")}
+KEY SKILLS: {", ".join((jd_json.get("must_have_skills") or []) + (jd_json.get("nice_to_have_skills") or []))}
+
+Foreground whichever of the candidate's truthful strengths above are most relevant to this job.
+"""
+        if jd_json
+        else ""
+    )
+
     prompt = f"""
 Resume JSON (truth source):
 {json.dumps(resume_json, indent=2)}
-
+{jd_context}
 Instructions:
-- Use ONLY information present above (roles, education, skills, bullets)
+- Use ONLY information present in the resume JSON above (roles, education, skills, bullets)
 - No new achievements or skills; do not change wording of bullets
 - Keep headline 50-80 characters; summary 2-3 sentences, ~120-220 chars total
 - If information is insufficient, return null for that field
@@ -376,6 +402,312 @@ Return the corrected bullet text.
         return parsed.bullet.strip() or tailored_bullet
     except Exception:
         return tailored_bullet
+
+
+async def revise_weak_opener(bullet: str, jd_json: dict) -> str:
+    """
+    Bounded, single-shot correction: rewrite ONE bullet so it opens with a
+    strong action verb instead of a passive/responsibility phrase or a
+    gerund, without changing what it actually claims.
+
+    Same no-internal-retry contract as revise_bullet() - on failure, returns
+    the bullet unchanged so the caller's own check still sees the violation.
+    """
+    if not client:
+        return bullet
+
+    system_message = (
+        "You are a resume editor. Rewrite exactly one bullet point so it "
+        "begins with a strong, specific past-tense action verb, without "
+        "changing what it actually claims."
+    )
+    prompt = f"""
+This bullet opens weakly - a responsibility phrase like "Responsible for" or "Worked on", or a gerund like "Managing..." - instead of a strong action verb:
+
+BULLET: "{bullet}"
+
+JOB TITLE: {jd_json.get("title", "N/A")}
+
+Rewrite it to:
+- Start with a strong, specific past-tense action verb (e.g. "Led", "Built", "Reduced", "Drove")
+- Keep the same facts, scope, and any metrics - do not invent new ones
+- Keep roughly the same length as the original
+
+Return the corrected bullet text.
+"""
+
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=_RevisedBullet,
+            temperature=0.2,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        return parsed.bullet.strip() or bullet
+    except Exception:
+        return bullet
+
+
+async def revise_repeated_verb(bullet: str, used_verbs: List[str], jd_json: dict) -> str:
+    """
+    Bounded, single-shot correction: rewrite ONE bullet so it opens with a
+    verb different from every verb already in use elsewhere on the resume,
+    without changing what it actually claims.
+
+    Cross-bullet-aware by construction (`used_verbs` is the caller's
+    running set) but each call is single-bullet and single-shot, same
+    no-internal-retry contract as revise_bullet() - the caller decides
+    whether the result is acceptable and falls back to the original bullet
+    if not, rather than looping here.
+    """
+    if not client:
+        return bullet
+
+    used_str = ", ".join(sorted(set(used_verbs))) or "(none)"
+    system_message = (
+        "You are a resume editor. Rewrite exactly one bullet point so it "
+        "opens with an action verb not already used elsewhere on the same "
+        "resume, without changing what it actually claims."
+    )
+    prompt = f"""
+This bullet's opening verb is already used by another bullet on the same resume, so it needs a different one:
+
+BULLET: "{bullet}"
+
+VERBS ALREADY IN USE ELSEWHERE ON THIS RESUME (do not start with any of these): {used_str}
+
+JOB TITLE: {jd_json.get("title", "N/A")}
+
+Rewrite it to:
+- Start with a strong, specific past-tense action verb NOT in the list above
+- Keep the same facts, scope, and any metrics - do not invent new ones
+- Keep roughly the same length as the original
+
+Return the corrected bullet text.
+"""
+
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=_RevisedBullet,
+            temperature=0.2,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        return parsed.bullet.strip() or bullet
+    except Exception:
+        return bullet
+
+
+async def revise_overlong_bullet(bullet: str, char_ceiling: int, jd_json: dict) -> str:
+    """
+    Bounded, single-shot correction: shorten ONE bullet to fit under a
+    character ceiling (bullet_verifier's calibrated proxy for a line-count
+    limit) by tightening language, without cutting any fact, metric, or
+    claim it makes.
+    """
+    if not client:
+        return bullet
+
+    system_message = (
+        "You are a resume editor. Shorten exactly one bullet point to fit a "
+        "character limit by tightening the wording, without cutting any "
+        "fact, metric, or claim it makes."
+    )
+    prompt = f"""
+This bullet is too long and needs to be shortened to fit the page:
+
+BULLET ({len(bullet)} chars): "{bullet}"
+
+TARGET: under {char_ceiling} characters
+
+JOB TITLE: {jd_json.get("title", "N/A")}
+
+Rewrite it to:
+- Fit under {char_ceiling} characters
+- Keep every fact, metric, and claim from the original - only tighten the wording
+- Keep the same opening action verb
+
+Return the corrected bullet text.
+"""
+
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=_RevisedBullet,
+            temperature=0.2,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        return parsed.bullet.strip() or bullet
+    except Exception:
+        return bullet
+
+
+class _SkillTypeClassification(BaseModel):
+    hard_skills: List[str]
+    applied_skills: List[str]
+
+
+async def classify_confirmed_skills(skills: list[str]) -> dict:
+    """
+    Split a candidate-confirmed skill list (e.g. from the inferred-skills
+    picker) into hard/tool skills (belong as Technical Skills keywords -
+    "Python", "SQL", "Tableau", "AWS") vs applied/methodology skills
+    ("Statistical Analysis", "KPI Development", "Data Validation", "ETL
+    Processes") that read better woven into a bullet's own wording than
+    listed as a standalone keyword.
+
+    The HARD bucket is deliberately narrow: only a coding/query language or
+    a specific named tool/platform - NOT a process, practice, or
+    methodology, even one that sounds technical. "ETL Processes" describes
+    a general data-engineering practice, not a named tool, so it belongs in
+    APPLIED even though it's a data/engineering term.
+
+    Returns {"hard_skills": [...], "applied_skills": [...]} - every input
+    skill appears in exactly one list. Falls back to treating everything as
+    a hard skill (today's behavior) on any failure, rather than silently
+    dropping a confirmed skill.
+    """
+    if not client or not skills:
+        return {"hard_skills": list(skills or []), "applied_skills": []}
+
+    system_message = (
+        "You are a resume editor. Classify each given skill as either a HARD skill or an "
+        "APPLIED skill.\n"
+        "HARD skill: ONLY a coding/query language (e.g. \"Python\", \"SQL\") or a specific "
+        "named tool, platform, software, or certification (e.g. \"Tableau\", \"AWS Cloud "
+        "Practitioner\", \"Excel\") - something a candidate would list as a standalone keyword.\n"
+        "APPLIED skill: everything else - a general analytical practice, technique, process, "
+        "or methodology that reads better as part of a sentence describing an accomplishment "
+        "than as a standalone keyword. This includes terms that sound technical but name a "
+        "PROCESS rather than a specific tool, e.g. \"Statistical Analysis\", \"KPI "
+        "Development\", \"Data Validation\", \"ETL Processes\", \"Stakeholder Management\", "
+        "\"Agile Methodology\" - none of these are a named tool or language, so none of them "
+        "are HARD skills even though they sound technical.\n"
+        "When in doubt whether something is a specific tool/language or a general practice, "
+        "classify it as APPLIED - the HARD bucket should stay narrow.\n"
+        "Every input skill must appear in exactly one of the two lists, unchanged."
+    )
+    prompt = f"""
+Skills to classify:
+{json.dumps(list(skills), indent=2)}
+"""
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_classification,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=_SkillTypeClassification,
+            temperature=0,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        hard = [s for s in parsed.hard_skills if s]
+        applied = [s for s in parsed.applied_skills if s]
+
+        # Never let a classification failure silently lose a confirmed
+        # skill - anything the model omitted from both lists falls back to
+        # "hard" (today's behavior), the safer default since it still ends
+        # up visible on the resume rather than dropped.
+        classified_lower = {s.strip().lower() for s in hard + applied}
+        missing = [s for s in skills if s.strip().lower() not in classified_lower]
+        hard.extend(missing)
+
+        return {"hard_skills": hard, "applied_skills": applied}
+    except Exception:
+        return {"hard_skills": list(skills), "applied_skills": []}
+
+
+class _SkillWeaveResult(BaseModel):
+    applicable: bool
+    bullet_index: Optional[int] = None
+    revised_bullet: Optional[str] = None
+
+
+async def weave_skill_into_bullet(
+    skill: str, bullets: list[str], jd_json: dict, already_woven_indices: Optional[set] = None
+) -> Optional[dict]:
+    """
+    Find the single most contextually plausible bullet (by index into
+    `bullets`) that this applied/methodology skill could truthfully have
+    been part of, and rewrite that one bullet to naturally weave it in -
+    or report the skill isn't a truthful fit for any bullet, so the caller
+    can leave it out entirely rather than force it somewhere untrue.
+
+    already_woven_indices: bullet indices a PRIOR call in the same batch
+    already wove a skill into. When more than one bullet is a genuinely
+    plausible fit, the model is told to prefer one not already on this
+    list, so several applied skills don't all pile onto the same bullet by
+    default - but this is a tie-breaker only, never a reason to pick a
+    worse-fitting bullet just to spread skills out.
+
+    Returns {"bullet_index": int, "revised_bullet": str} or None.
+    """
+    if not client or not bullets:
+        return None
+
+    numbered = "\n".join(f"{i}: \"{b}\"" for i, b in enumerate(bullets))
+    already_woven_note = (
+        f"\nBullets that already had another skill woven in this pass (prefer avoiding these "
+        f"if another bullet is an equally genuine fit - but only as a tie-breaker, never over a "
+        f"better-fitting bullet): {sorted(already_woven_indices)}\n"
+        if already_woven_indices
+        else ""
+    )
+    system_message = (
+        "You are a resume editor. Given a candidate's confirmed skill and their existing "
+        "resume bullets, decide whether any ONE bullet plausibly involved that skill based "
+        "on what the bullet already describes. If so, rewrite that bullet to naturally "
+        "weave the skill into its wording without changing its core facts, metrics, or "
+        "length. If no bullet is a truthful, plausible fit, say so - never force the skill "
+        "into a bullet it doesn't genuinely relate to."
+    )
+    prompt = f"""
+CONFIRMED SKILL: "{skill}"
+
+JOB TITLE: {jd_json.get("title", "N/A")}
+
+CANDIDATE'S BULLETS (indexed):
+{numbered}
+{already_woven_note}
+Instructions:
+- Pick AT MOST ONE bullet index where this skill plausibly applies to the work already described.
+- Rewrite only that bullet to weave the skill in naturally - keep its facts, metrics, and
+  roughly its length unchanged.
+- If none of the bullets are a genuine fit for this skill, set applicable to false and leave
+  bullet_index/revised_bullet empty - do not pick the closest option if it isn't a real fit.
+- If multiple bullets are equally genuine fits, prefer one not already listed above as having a
+  skill woven in - avoid concentrating every skill into a single bullet when better distributed
+  placement is just as truthful.
+"""
+    try:
+        response = await client.chat.completions.parse(
+            model=settings.openai_model_fast,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ],
+            response_format=_SkillWeaveResult,
+            temperature=0.2,
+        )
+        parsed = _extract_parsed(response.choices[0].message)
+        if not parsed.applicable or parsed.bullet_index is None or not parsed.revised_bullet:
+            return None
+        return {"bullet_index": parsed.bullet_index, "revised_bullet": parsed.revised_bullet.strip()}
+    except Exception:
+        return None
 
 
 MIN_SKILL_CATEGORIES = 2  # floor, enforced below via one bounded retry
@@ -521,7 +853,14 @@ Instructions:
                 categories = retry_categories
 
         categories = _enforce_skill_category_cap(categories)
-        return _restore_dropped_skills(categories, all_items)
+        categories = _restore_dropped_skills(categories, all_items)
+        # Runs last, after restoration - a dropped-then-restored certification
+        # gets placed by _restore_dropped_skills' own wording guess ("certif"
+        # substring), which doesn't catch every real certification (e.g. "AWS
+        # Cloud Practitioner" has no such substring). This is the final,
+        # authoritative pass: anything we KNOW is a certification ends up in
+        # the Certifications category no matter how it got misplaced.
+        return _relocate_known_certifications(categories, certifications or [])
     except Exception:
         return []
 
@@ -587,6 +926,57 @@ Rules:
         return [a.model_dump() for a in parsed.assignments if a.skill and a.category_label]
     except Exception:
         return []
+
+
+def _relocate_known_certifications(categories: list[dict], certifications: list[str]) -> list[dict]:
+    """
+    Force every item passed in as a KNOWN certification (categorize_skills'
+    `certifications` argument - i.e. the resume's own parsed
+    additional_info.certifications, not a guess from wording) into the
+    Certifications category, regardless of which category it currently
+    sits in or how it got there. Called last, after both the model's own
+    categorization AND _restore_dropped_skills - a certification can end up
+    misplaced either way: the model files it under an invented category
+    directly, or omits it entirely and _restore_dropped_skills' own
+    wording-based guess (a "certif" substring match) puts it back in the
+    wrong place since not every real certification's name contains that
+    substring (e.g. "AWS Cloud Practitioner").
+
+    The system prompt already tells the model to keep certifications
+    separate even when worded like a skill - but that's prompt compliance,
+    not a guarantee, and it isn't reliable: observed directly on a real
+    resume, "AWS Cloud Practitioner" and "COMPTIA Security+ (In Progress)"
+    (both passed in here as known certifications) still ended up filed
+    under an invented "Programming" category. Since we already know for a
+    fact which items are certifications, there's no reason to leave their
+    placement up to the model at all.
+    """
+    known_lower = {c.strip().lower() for c in certifications if c and c.strip()}
+    if not known_lower:
+        return categories
+
+    cert_idx = next((i for i, c in enumerate(categories) if "certif" in c["label"].lower()), None)
+    if cert_idx is None:
+        categories.append({"label": "Certifications", "items": []})
+        cert_idx = len(categories) - 1
+
+    cert_items_lower = {i.strip().lower() for i in categories[cert_idx]["items"]}
+
+    for i, cat in enumerate(categories):
+        if i == cert_idx:
+            continue
+        misplaced = [item for item in cat["items"] if item.strip().lower() in known_lower]
+        if not misplaced:
+            continue
+        cat["items"] = [item for item in cat["items"] if item.strip().lower() not in known_lower]
+        for item in misplaced:
+            if item.strip().lower() not in cert_items_lower:
+                categories[cert_idx]["items"].append(item)
+                cert_items_lower.add(item.strip().lower())
+
+    # A non-cert category emptied out entirely by relocation shouldn't
+    # survive as an empty bucket.
+    return [c for c in categories if c["items"]]
 
 
 def _enforce_skill_category_cap(categories: list[dict]) -> list[dict]:

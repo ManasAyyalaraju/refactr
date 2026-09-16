@@ -343,15 +343,57 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     render();
   }
 
+  // resume.inferred_skills is {tools, methodologies} for a resume
+  // reformatted/reparsed after the tool-vs-methodology split existed, or a
+  // plain string[] (no type info) for one saved before then. The picker
+  // itself always shows one flat, undifferentiated list either way - this
+  // just merges the two groups for display/ranking purposes.
+  function flattenInferredSkills(inferred: BaseResumeRow['inferred_skills']): string[] {
+    if (!inferred) return [];
+    if (Array.isArray(inferred)) return inferred;
+    return [...(inferred.tools ?? []), ...(inferred.methodologies ?? [])];
+  }
+
+  // Splits a set of CONFIRMED skills (a subset of flattenInferredSkills'
+  // output) into hard/applied/unclassified, using whichever type info
+  // resume.inferred_skills carries. A legacy string[]-shaped resume has no
+  // type info at all, so everything it offers falls into "unclassified" -
+  // the backend classifies those itself (tailor_resume's legacy fallback).
+  function splitConfirmedSkillsByType(
+    resume: BaseResumeRow,
+    confirmedSkills: string[]
+  ): { hard: string[]; applied: string[]; unclassified: string[] } {
+    const inferred = resume.inferred_skills;
+    if (!inferred || Array.isArray(inferred)) {
+      return { hard: [], applied: [], unclassified: confirmedSkills };
+    }
+
+    const toolsLower = new Set((inferred.tools ?? []).map((s) => s.toLowerCase()));
+    const methodologiesLower = new Set((inferred.methodologies ?? []).map((s) => s.toLowerCase()));
+
+    const hard: string[] = [];
+    const applied: string[] = [];
+    const unclassified: string[] = [];
+    for (const skill of confirmedSkills) {
+      const lower = skill.toLowerCase();
+      if (toolsLower.has(lower)) hard.push(skill);
+      else if (methodologiesLower.has(lower)) applied.push(skill);
+      else unclassified.push(skill);
+    }
+    return { hard, applied, unclassified };
+  }
+
   async function handleTailor() {
     if (!state.user || !jobContext || !state.selectedResumeId) return;
 
     const resume = state.resumes.find((r) => r.id === state.selectedResumeId);
     if (!resume) return;
 
+    const inferredSkillsFlat = flattenInferredSkills(resume.inferred_skills);
+
     // Only resumes with inferred_skills (saved after Phase 1, or reparsed)
     // have anything to offer here - skip straight to tailoring otherwise.
-    if (!resume.inferred_skills || resume.inferred_skills.length === 0) {
+    if (inferredSkillsFlat.length === 0) {
       await runTailor([]);
       return;
     }
@@ -373,7 +415,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       ];
       const { jobDescription: jd, skillMatches } = await parseJobDescription(
         jobContext.description,
-        resume.inferred_skills,
+        inferredSkillsFlat,
         explicitSkills
       );
       const explicitLower = new Set(explicitSkills.map((s) => s.toLowerCase()));
@@ -401,7 +443,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       const impact = new Map<string, number>();
       const bump = (skill: string, weight: number) => impact.set(skill, (impact.get(skill) ?? 0) + weight);
 
-      for (const skill of resume.inferred_skills) {
+      for (const skill of inferredSkillsFlat) {
         const lower = skill.toLowerCase();
         if (jdSkillsLower.has(lower) && !coveredByExplicit.has(lower)) {
           bump(skill, mustHaveLower.has(lower) ? 2 : 1);
@@ -457,11 +499,15 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
         sourceParams = { pdfBlob, fileName: resume.file_name ?? resume.title };
       }
 
+      const { hard, applied, unclassified } = splitConfirmedSkillsByType(resume, additionalSkills);
+
       const tailorResult = await tailorResumePdf({
         ...sourceParams,
         jobDescription: jobContext.description,
         resumeFormat: state.resumeFormat,
-        additionalSkills,
+        additionalHardSkills: hard,
+        additionalAppliedSkills: applied,
+        additionalUnclassifiedSkills: unclassified,
       });
 
       await downloadBlob(tailorResult.pdfBlob, buildTailoredResumeFilename(jobContext));

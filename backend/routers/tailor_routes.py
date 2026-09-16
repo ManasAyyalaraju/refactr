@@ -18,9 +18,9 @@ from core.timing import timed_stage
 from models.resume_models import Resume
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.job_parser import parse_job_description_from_text
-from services.tailor_engine import tailor_resume, ensure_technical_skills
+from services.tailor_engine import tailor_resume, ensure_technical_skills, render_pdf_with_underfill_backfill
 from services.skill_inference import match_inferred_skills_to_jd
-from services.pdf_writer import render_resume_pdf
+from services.llm_client import classify_confirmed_skills
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,20 @@ def _compute_compatibility(
         "resume_skill_hits": resume_skill_hits,
     }
 
+def _parse_skill_array_field(raw: Optional[str], field_name: str) -> List[str]:
+    """Parse a JSON-array-of-strings form field, or raise a 400 naming the
+    field, so a malformed value surfaces clearly instead of a generic 500."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list) or not all(isinstance(s, str) for s in parsed):
+            raise ValueError(f"{field_name} must be a JSON array of strings")
+        return parsed
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}.")
+
+
 @router.post("/tailor/pdf")
 async def tailor_resume_from_pdf(
     pdf: Optional[UploadFile] = File(None),
@@ -134,6 +148,9 @@ async def tailor_resume_from_pdf(
     jd_text: str = Form(...),
     output: str = Form("json"),
     resume_format: str = Form("regular"),
+    additional_hard_skills: Optional[str] = Form(None),
+    additional_applied_skills: Optional[str] = Form(None),
+    additional_unclassified_skills: Optional[str] = Form(None),
     additional_skills: Optional[str] = Form(None),
 ):
     """
@@ -143,9 +160,20 @@ async def tailor_resume_from_pdf(
       base_resume - skips the PDF parse entirely)
     Plus JD text.
 
-    additional_skills: optional JSON array string of skills the candidate
-    explicitly confirmed (e.g. from the inferred-skills picker) - merged
-    into the resume's truthful skill pool before tailoring.
+    Skills the candidate explicitly confirmed (e.g. from the inferred-skills
+    picker), each a JSON array string:
+    - additional_hard_skills: tools/languages/certifications - merged into
+      the resume's Technical Skills.
+    - additional_applied_skills: methodologies/techniques - woven into
+      bullet wording instead.
+    - additional_unclassified_skills: confirmed skills from a base_resumes
+      row saved before the picker tagged tool-vs-methodology at suggestion
+      time - classified here via tailor_resume's legacy fallback path.
+    - additional_skills: DEPRECATED alias for additional_unclassified_skills
+      - the pre-split field names above didn't exist yet when this was the
+      only field. Kept for callers not yet updated to the new contract
+      (e.g. the web app's own tailor page, a separate implementation of
+      this same picker); treated identically to additional_unclassified_skills.
 
     Returns:
     - Tailored resume JSON
@@ -166,18 +194,13 @@ async def tailor_resume_from_pdf(
         )
 
     # Validated up-front (not inside the try/except below) so a malformed
-    # resume_json/additional_skills surfaces as its own 400 instead of being
-    # swallowed by the generic 500 handler further down.
-    parsed_additional_skills: List[str] = []
-    if additional_skills:
-        try:
-            parsed_additional_skills = json.loads(additional_skills)
-            if not isinstance(parsed_additional_skills, list) or not all(
-                isinstance(s, str) for s in parsed_additional_skills
-            ):
-                raise ValueError("additional_skills must be a JSON array of strings")
-        except (json.JSONDecodeError, ValueError):
-            raise HTTPException(status_code=400, detail="Invalid additional_skills.")
+    # skill field surfaces as its own 400 instead of being swallowed by the
+    # generic 500 handler further down.
+    parsed_hard_skills = _parse_skill_array_field(additional_hard_skills, "additional_hard_skills")
+    parsed_applied_skills = _parse_skill_array_field(additional_applied_skills, "additional_applied_skills")
+    parsed_unclassified_skills = _parse_skill_array_field(
+        additional_unclassified_skills, "additional_unclassified_skills"
+    ) + _parse_skill_array_field(additional_skills, "additional_skills")
 
     parsed_resume: Optional[Resume] = None
     if resume_json is not None:
@@ -213,6 +236,19 @@ async def tailor_resume_from_pdf(
             with timed_stage("parse_jd", timings):
                 jd, domain_info = await parse_job_description_from_text(jd_text)
 
+        # Resolve confirmed skills that came in unclassified (a legacy
+        # base_resumes row saved before the picker tagged tool-vs-
+        # methodology at suggestion time) into the hard/applied split now -
+        # needed before the pre-merge below, which must only fold HARD
+        # skills into resume.skills/Technical Skills. Applied/methodology
+        # skills are deliberately excluded from this merge; they're woven
+        # into bullet wording instead, inside tailor_resume() (step 5d).
+        if parsed_unclassified_skills:
+            with timed_stage("classify_confirmed_skills", timings):
+                classified = await classify_confirmed_skills(parsed_unclassified_skills)
+            parsed_hard_skills = parsed_hard_skills + (classified.get("hard_skills") or [])
+            parsed_applied_skills = parsed_applied_skills + (classified.get("applied_skills") or [])
+
         # Parse any dedicated skills line and MERGE with extracted skills (do not overwrite).
         line_skills: List[str] = []
         if getattr(resume.additional_info, "computer_skills", None):
@@ -222,26 +258,29 @@ async def tailor_resume_from_pdf(
 
         category_skills: List[str] = [item for cat in resume.technical_skills for item in cat.items]
 
-        # additional_skills (confirmed from the picker) must be merged in
-        # here, before categorize_skills below - not left to tailor_resume()'s
-        # own merge, which runs after categorization and left newly-confirmed
-        # skills out of the rendered TECHNICAL SKILLS section entirely even
-        # though they appeared in the flat skills list. tailor_resume() still
-        # merges them too (idempotent - a no-op for anything already present)
-        # so it stays correct if ever called without this router in front of it.
+        # Confirmed HARD skills (tools/languages/certifications) must be
+        # merged in here, before categorize_skills below - not left to
+        # tailor_resume()'s own merge, which runs after categorization and
+        # left newly-confirmed skills out of the rendered TECHNICAL SKILLS
+        # section entirely even though they appeared in the flat skills
+        # list. tailor_resume() still merges them too (idempotent - a no-op
+        # for anything already present) so it stays correct if ever called
+        # without this router in front of it. Applied/methodology skills
+        # are intentionally NOT merged here - see above.
         resume.skills = _merge_and_dedupe_skills(
-            resume.skills or [], line_skills, category_skills, parsed_additional_skills
+            resume.skills or [], line_skills, category_skills, parsed_hard_skills
         )
 
         # The Regular template's Additional Info section renders
         # additional_info.computer_skills/technical_skills as a raw string
         # directly - not resume.skills - so a confirmed picker skill that's
         # only reflected in resume.skills never actually shows up in the
-        # rendered PDF. Append any newly-confirmed skills onto whichever raw
-        # line the resume originally had, so the two stay in sync. No-op for
-        # a resume with no additional_info skills line at all (the template
-        # falls back to rendering resume.skills directly in that case).
-        if parsed_additional_skills and resume.additional_info:
+        # rendered PDF. Append any newly-confirmed HARD skills onto
+        # whichever raw line the resume originally had, so the two stay in
+        # sync. No-op for a resume with no additional_info skills line at
+        # all (the template falls back to rendering resume.skills directly
+        # in that case).
+        if parsed_hard_skills and resume.additional_info:
             # Truthy check, not `is not None` - additional_info.computer_skills/
             # technical_skills can be an empty string rather than None for a
             # resume with no such line, and appending onto "" produced a
@@ -250,7 +289,7 @@ async def tailor_resume_from_pdf(
             existing_line = resume.additional_info.computer_skills or resume.additional_info.technical_skills
             if existing_line:
                 existing_lower = {_normalize_skill(s) for s in _parse_skill_line(existing_line)}
-                new_items = [s for s in parsed_additional_skills if _normalize_skill(s) not in existing_lower]
+                new_items = [s for s in parsed_hard_skills if _normalize_skill(s) not in existing_lower]
                 if new_items:
                     appended = existing_line.rstrip().rstrip(",") + ", " + ", ".join(new_items)
                     if resume.additional_info.computer_skills:
@@ -270,7 +309,11 @@ async def tailor_resume_from_pdf(
 
         # 3) Tailor
         with timed_stage("tailor", timings):
-            tailored_resume = await tailor_resume(resume, jd, domain_info, parsed_additional_skills)
+            tailored_resume = await tailor_resume(
+                resume, jd, domain_info,
+                additional_hard_skills=parsed_hard_skills,
+                additional_applied_skills=parsed_applied_skills,
+            )
 
         # 3b) Compatibility report
         jd_data = jd.model_dump()
@@ -283,7 +326,7 @@ async def tailor_resume_from_pdf(
         # or "data modeling techniques" satisfied by a confirmed
         # "hyperparameter tuning") need an LLM judgment call instead. Runs
         # unconditionally against the resume's final skill list (explicit +
-        # any confirmed additional_skills, already merged in above) so a
+        # any confirmed hard skills, already merged in above) so a
         # resume with no inferred-skills picker interaction still gets full
         # credit for what it already explicitly lists - not just resumes
         # that happened to go through the picker.
@@ -297,6 +340,14 @@ async def tailor_resume_from_pdf(
             candidate_skills = list(tailored_resume.skills or [])
             if tailored_resume.additional_info and tailored_resume.additional_info.certifications:
                 candidate_skills += tailored_resume.additional_info.certifications
+            # Confirmed applied/methodology skills (e.g. "Statistical
+            # Analysis") never get merged into resume.skills - they're woven
+            # into bullet wording instead - but the candidate still
+            # genuinely confirmed having them, so a JD requirement they
+            # satisfy should count toward the score too, not just toward
+            # bullet content.
+            if parsed_applied_skills:
+                candidate_skills += parsed_applied_skills
             with timed_stage("credit_semantic_skills", timings):
                 matches = await match_inferred_skills_to_jd(still_missing, candidate_skills)
             credited = [m["jd_skill"] for m in matches]
@@ -308,7 +359,9 @@ async def tailor_resume_from_pdf(
         # 4) Output mode
         if output.lower() == "pdf":
             with timed_stage("render_pdf", timings):
-                pdf_bytes = render_resume_pdf(tailored_resume, use_technical_skills=use_technical_skills)
+                pdf_bytes = await render_pdf_with_underfill_backfill(
+                    tailored_resume, use_technical_skills, jd_json=jd_data
+                )
             return StreamingResponse(
                 iter([pdf_bytes]),
                 media_type="application/pdf",

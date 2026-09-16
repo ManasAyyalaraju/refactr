@@ -3,14 +3,30 @@ from typing import List, Optional
 from models.resume_models import Resume, TechnicalSkillCategory
 from models.job_models import JobDescription
 from core.exceptions import TailoringGenerationError
-from services.bullet_verifier import verify_bullets, find_unauthorized_terms
+from services.bullet_verifier import (
+    verify_bullets,
+    find_unauthorized_terms,
+    find_weak_opener_bullets,
+    find_duplicate_opening_verbs,
+    extract_opening_verb,
+    find_overlong_bullets,
+    SPARSE_BULLET_CHAR_CEILING,
+)
 from .llm_client import (
     rewrite_resume_sections,
     categorize_skills,
     assign_skills_to_existing_categories,
     revise_bullet,
+    revise_weak_opener,
+    revise_repeated_verb,
+    revise_overlong_bullet,
+    generate_headline_summary,
+    classify_confirmed_skills,
+    weave_skill_into_bullet,
     _category_split_is_degenerate,
 )
+from services.pdf_writer import render_resume_pdf_ex, _count_pdf_pages
+import asyncio
 import json
 import logging
 import re
@@ -328,11 +344,249 @@ async def _verify_and_correct_section(
                 rewritten.bullets[idx] = revised
 
 
+def _tailorable_bullet_lists(resume: Resume) -> List[list]:
+    """
+    Bullet lists from the sections tailoring actually rewrites - mirrors
+    _verify_and_correct_section's scope (experience/projects/leadership;
+    volunteer_work isn't LLM-rewritten so it's excluded here too).
+    """
+    lists = [entry.bullets for entry in resume.experience]
+    lists += [entry.bullets for entry in resume.projects]
+    lists += [entry.bullets for entry in resume.leadership]
+    return lists
+
+
+async def _correct_weak_openers(resume: Resume, jd_json: dict) -> None:
+    """
+    Auto-correct fix-up for bullets that open with a responsibility phrase
+    or a gerund instead of a strong action verb. Each bullet's correction
+    is independent of every other, so they run concurrently.
+    """
+    refs = [
+        (bullets, idx)
+        for bullets in _tailorable_bullet_lists(resume)
+        for idx in find_weak_opener_bullets(bullets)
+    ]
+    if not refs:
+        return
+
+    revised = await asyncio.gather(*[revise_weak_opener(bullets[idx], jd_json) for bullets, idx in refs])
+    for (bullets, idx), new_bullet in zip(refs, revised):
+        bullets[idx] = new_bullet
+
+    logger.info("bullet_verifier: corrected %d weak-opener bullet(s)", len(refs))
+
+
+async def _correct_repeated_opening_verbs(resume: Resume, jd_json: dict) -> None:
+    """
+    Auto-correct fix-up for bullets that share an opening verb with another
+    bullet on the same resume. Unlike weak-opener correction, this needs
+    cross-bullet awareness - each fix must avoid every verb already in use,
+    including ones just fixed earlier in this same pass - so corrections
+    run sequentially with a growing used-verb set rather than concurrently.
+    """
+    all_refs = [
+        (bullets, idx)
+        for bullets in _tailorable_bullet_lists(resume)
+        for idx in range(len(bullets))
+    ]
+    flat_bullets = [bullets[idx] for bullets, idx in all_refs]
+
+    duplicates = find_duplicate_opening_verbs(flat_bullets)
+    if not duplicates:
+        return
+
+    used_verbs = {extract_opening_verb(b) for b in flat_bullets if extract_opening_verb(b)}
+    corrected_count = 0
+
+    for verb, flat_idxs in duplicates.items():
+        # Keep the first bullet using this verb as-is; only the later ones
+        # sharing it need a new verb.
+        for flat_idx in flat_idxs[1:]:
+            bullets, idx = all_refs[flat_idx]
+            original = bullets[idx]
+
+            revised = await revise_repeated_verb(original, sorted(used_verbs), jd_json)
+            new_verb = extract_opening_verb(revised)
+
+            # Bounded to one attempt - if the model didn't actually land on
+            # an unused verb, keep the original bullet (still a duplicate,
+            # but truthful and safe) rather than risk another round.
+            if new_verb and new_verb not in used_verbs:
+                bullets[idx] = revised
+                used_verbs.add(new_verb)
+                corrected_count += 1
+            else:
+                logger.warning(
+                    "bullet_verifier: repeated-verb re-ask did not produce a new verb, "
+                    "keeping original bullet (verb=%s)", verb
+                )
+
+    if corrected_count:
+        logger.info("bullet_verifier: corrected %d repeated-opening-verb bullet(s)", corrected_count)
+
+
+async def _correct_overlong_bullets(resume: Resume, jd_json: dict) -> None:
+    """
+    Auto-correct fix-up for bullets exceeding SPARSE_BULLET_CHAR_CEILING -
+    bullet_verifier's calibrated character proxy for the sparse-mode
+    3-line ceiling (nothing in this pipeline renders an individual bullet
+    to measure its actual wrapped line count). Each bullet's correction is
+    independent of every other, so they run concurrently. Only meaningful
+    for sparse (non-compact) resumes - the caller only invokes this when
+    compact_mode is off, since compact mode's own char-match instruction
+    already keeps bullets well under this ceiling.
+    """
+    refs = [
+        (bullets, idx)
+        for bullets in _tailorable_bullet_lists(resume)
+        for idx in find_overlong_bullets(bullets)
+    ]
+    if not refs:
+        return
+
+    revised = await asyncio.gather(
+        *[revise_overlong_bullet(bullets[idx], SPARSE_BULLET_CHAR_CEILING, jd_json) for bullets, idx in refs]
+    )
+    corrected_count = 0
+    for (bullets, idx), new_bullet in zip(refs, revised):
+        # Bounded to one attempt - if the model still didn't get it under
+        # the ceiling, keep whichever version is actually shorter rather
+        # than risk another round.
+        if len(new_bullet) < len(bullets[idx]):
+            bullets[idx] = new_bullet
+            corrected_count += 1
+
+    if corrected_count:
+        logger.info("bullet_verifier: shortened %d overlong bullet(s)", corrected_count)
+
+
+async def _weave_applied_skills(resume: Resume, applied_skills: List[str], jd_json: dict) -> None:
+    """
+    For each confirmed applied/methodology skill (classify_confirmed_skills'
+    "applied" bucket - e.g. "Statistical Analysis", "KPI Development"),
+    find the single most contextually plausible bullet across experience/
+    projects/leadership and weave the skill into its wording, instead of
+    adding it to the Technical Skills section where it doesn't read as a
+    tool/keyword. Skipped entirely for a skill with no truthful fit - a
+    confirmed skill that can't honestly attach to any bullet is left out
+    rather than forced onto one.
+
+    Sequential, not concurrent: two applied skills could plausibly target
+    the same bullet, and each call needs to see the previous one's
+    revision already applied so it doesn't get silently overwritten. Also
+    tracks which bullets already received a woven skill and passes that
+    along, so multiple applied skills spread across different bullets when
+    more than one is a genuinely truthful fit, instead of defaulting to
+    piling every skill onto whichever single bullet is the closest match.
+    """
+    if not applied_skills:
+        return
+
+    bullet_lists = _tailorable_bullet_lists(resume)
+    woven_count = 0
+    already_woven_indices: set = set()
+
+    for skill in applied_skills:
+        flat_bullets = [b for bullets in bullet_lists for b in bullets]
+        if not flat_bullets:
+            break
+
+        result = await weave_skill_into_bullet(skill, flat_bullets, jd_json, already_woven_indices)
+        if not result:
+            continue
+
+        flat_idx = result.get("bullet_index")
+        revised = result.get("revised_bullet")
+        if flat_idx is None or not revised or not (0 <= flat_idx < len(flat_bullets)):
+            continue
+
+        # Map the flat index back to its (bullets_list, local index) - same
+        # flatten order flat_bullets was just built in.
+        cursor = 0
+        for bullets in bullet_lists:
+            if flat_idx < cursor + len(bullets):
+                bullets[flat_idx - cursor] = revised
+                already_woven_indices.add(flat_idx)
+                woven_count += 1
+                break
+            cursor += len(bullets)
+
+    if woven_count:
+        logger.info("skill_inference: wove %d applied skill(s) into bullets", woven_count)
+
+
+async def render_pdf_with_underfill_backfill(
+    resume: Resume, use_technical_skills: bool, jd_json: Optional[dict] = None
+) -> bytes:
+    """
+    Render the resume, and if the post-render underfill check discovers the
+    page actually needed a headline/summary after all - compact_mode's
+    pre-render bullet-count guess said "full enough to skip it," but the
+    real one-page render came back visibly underfull - generate one and
+    re-render once more, reusing the render's own fill-ratio measurement
+    instead of trusting the pre-render heuristic alone.
+
+    Bullets are never re-tailored here, only this cheap headline/summary
+    addition: re-running the main tailoring call a second time would
+    roughly double tailoring latency for every resume that hits this edge
+    case, for a page-fill problem that headline/summary content (plus the
+    spacing loosening render_resume_pdf_ex already applied) already fixes.
+
+    Mutates `resume.headline`/`resume.summary` in place when it generates
+    them, so a caller returning this same resume object as JSON (not just
+    the PDF bytes) stays consistent with what got rendered - and reverts
+    that mutation if the backfilled render has to be discarded (see below),
+    for the same reason.
+
+    jd_json: forwarded to generate_headline_summary - JD-aware framing at
+    tailor time, resume-only at reformat time (no JD).
+    """
+    pdf_bytes, needs_headline_summary = render_resume_pdf_ex(resume, use_technical_skills)
+
+    if not needs_headline_summary:
+        return pdf_bytes
+
+    resume_json = json.loads(resume.model_dump_json())
+    generated = await generate_headline_summary(resume_json, jd_json)
+
+    if not generated.get("headline") and not generated.get("summary"):
+        return pdf_bytes
+
+    original_headline, original_summary = resume.headline, resume.summary
+    resume.headline = generated.get("headline") or resume.headline
+    resume.summary = generated.get("summary") or resume.summary
+
+    backfilled_bytes, _ = render_resume_pdf_ex(resume, use_technical_skills)
+
+    # Guard against the rare case where the added headline/summary content
+    # pushes an already-borderline-full resume onto a 2nd page -
+    # render_resume_pdf_ex's own overflow guard already tries
+    # ultra_compact_mode first, but if it still doesn't fit in one page,
+    # revert the content change (so a caller returning `resume` as JSON
+    # alongside the PDF stays consistent with what actually got rendered)
+    # and ship the original underfull-but-safely-one-page render instead.
+    # A resume with some blank space at the bottom beats one that spilled
+    # onto a second page.
+    try:
+        still_one_page = _count_pdf_pages(backfilled_bytes) == 1
+    except Exception:
+        still_one_page = False
+
+    if not still_one_page:
+        resume.headline, resume.summary = original_headline, original_summary
+        return pdf_bytes
+
+    return backfilled_bytes
+
+
 async def tailor_resume(
     resume: Resume,
     jd: JobDescription,
     domain_info: dict,
-    additional_skills: Optional[List[str]] = None,
+    additional_hard_skills: Optional[List[str]] = None,
+    additional_applied_skills: Optional[List[str]] = None,
+    legacy_unclassified_skills: Optional[List[str]] = None,
 ) -> Resume:
     """
     Tailor resume to the job description:
@@ -344,19 +598,45 @@ async def tailor_resume(
     4. Verify tailored bullets don't introduce a JD skill the candidate
        doesn't actually have; correct (bounded to one retry) or revert any
        that do.
-    5. Set compact_mode based on resume fullness
+    5. Auto-correct bullets that open weakly (a responsibility phrase or a
+       gerund), that share an opening verb with another bullet on the
+       resume, or (sparse resumes only) that exceed the calibrated
+       character ceiling for the 3-line length target; weave any confirmed
+       applied/methodology skills into bullet wording.
+    6. Set compact_mode based on resume fullness
 
-    `additional_skills` - skills the candidate explicitly confirmed they
-    have (e.g. from the inferred-skills picker), merged into resume.skills
-    BEFORE reordering/rewriting so they're treated as truthful: the LLM
-    rewrite sees them as part of the resume's real skill list, and the
-    bullet verifier's allowed-skill pool (read from the rewritten resume's
-    skills afterward) includes them automatically - no verifier changes
-    needed.
+    Skills the candidate explicitly confirmed they have (e.g. from the
+    inferred-skills picker) arrive pre-split by the caller into two groups,
+    since skill_inference.suggest_plausible_skills_grouped already tags
+    each suggestion tool-vs-methodology at the point it's suggested:
+    - `additional_hard_skills` - tools/languages/certifications, merged into
+      resume.skills BEFORE reordering/rewriting so they're treated as
+      truthful: the LLM rewrite sees them as part of the resume's real
+      skill list, and the bullet verifier's allowed-skill pool (read from
+      the rewritten resume's skills afterward) includes them automatically
+      - no verifier changes needed.
+    - `additional_applied_skills` - methodologies/techniques, held back and
+      woven into bullet wording instead, after tailoring finishes (step
+      5d) - they don't read naturally as Technical Skills keywords.
+
+    `legacy_unclassified_skills` - confirmed skills from a base_resumes row
+    saved before the picker tagged tool-vs-methodology at suggestion time
+    (inferred_skills was a flat, untyped list then). Classified here via
+    classify_confirmed_skills and merged into the two groups above, so an
+    older saved resume still works correctly without needing to be
+    re-reformatted first.
     """
-    if additional_skills:
+    hard_skills = list(additional_hard_skills or [])
+    applied_skills = list(additional_applied_skills or [])
+
+    if legacy_unclassified_skills:
+        classified = await classify_confirmed_skills(legacy_unclassified_skills)
+        hard_skills += classified.get("hard_skills") or []
+        applied_skills += classified.get("applied_skills") or []
+
+    if hard_skills:
         existing_lower = {s.lower() for s in resume.skills}
-        for skill in additional_skills:
+        for skill in hard_skills:
             if skill and skill.lower() not in existing_lower:
                 resume.skills.append(skill)
                 existing_lower.add(skill.lower())
@@ -481,10 +761,29 @@ async def tailor_resume(
         original_leadership, rewritten_resume.leadership, jd_skills, resume_skill_pool, resume_technical_pool, jd_json
     )
 
-    # Step 5: Format skills (tools stay as is, concept phrases get title case)
+    # Step 5a: auto-correct bullets that open weakly (independent per bullet)
+    await _correct_weak_openers(rewritten_resume, jd_json)
+
+    # Step 5b: auto-correct bullets that share an opening verb with another
+    # bullet - run after weak-opener correction so it sees the final
+    # opening verbs (weak-opener fixes can themselves change a verb)
+    await _correct_repeated_opening_verbs(rewritten_resume, jd_json)
+
+    # Step 5c: auto-correct bullets over the sparse-mode line-length
+    # ceiling - only meaningful for sparse resumes; compact mode's own
+    # char-match instruction already keeps bullets well under it
+    if not rewritten_resume.compact_mode:
+        await _correct_overlong_bullets(rewritten_resume, jd_json)
+
+    # Step 5d: weave confirmed applied/methodology skills into bullet
+    # wording rather than the Technical Skills section
+    if applied_skills:
+        await _weave_applied_skills(rewritten_resume, applied_skills, jd_json)
+
+    # Step 6: Format skills (tools stay as is, concept phrases get title case)
     rewritten_resume.skills = format_skills_list(rewritten_resume.skills)
 
-    # Step 6: Conditionally remove headline/summary if resume is too full
+    # Step 7: Conditionally remove headline/summary if resume is too full
     rewritten_resume = conditionally_remove_headline_summary(rewritten_resume)
 
     return rewritten_resume

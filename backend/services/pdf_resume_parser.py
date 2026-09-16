@@ -114,6 +114,7 @@ I will give you RAW TEXT extracted from a PDF resume. Convert it into the resume
   * "major": The field of study/major (e.g., "Computer Science", "Business Administration", "Biology")
   * If the resume shows "Bachelor of Science in Computer Science" or "B.S., Computer Science", split it into degree="Bachelor of Science" and major="Computer Science"
 - If a GPA is present, put it in the "gpa" field as a short string (e.g. "3.6"). If no GPA is present, leave "gpa" empty.
+- If an education entry lists a "Relevant Coursework" (or "Related Coursework") line, put the course names in that education entry's "relevant_coursework" field as a single comma-separated string, exactly as listed. If not present, leave it empty.
 - DATE FORMATTING: Format all dates as "Month YYYY" (e.g., "December 2026", "October 2025", "April 2021"). Do NOT use "YYYY-MM" format. If only year is available, use just "YYYY".
 - **PROJECTS SECTION**: The "projects" field should include content from sections labeled as:
   * "PROJECTS" or "Projects"
