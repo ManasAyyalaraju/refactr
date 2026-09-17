@@ -5,3 +5,11 @@ class TailoringGenerationError(Exception):
     this exists so that failure is a visible, catchable signal instead.
     """
     pass
+
+
+class UnreadablePdfError(Exception):
+    """Raised when a PDF has no extractable text (e.g. a scanned/flattened
+    image PDF) - parsing it would otherwise silently produce a blank resume
+    instead of a visible, catchable failure.
+    """
+    pass

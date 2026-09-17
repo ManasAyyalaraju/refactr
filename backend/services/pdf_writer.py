@@ -204,7 +204,9 @@ def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> byte
     24-bullet resume flagged compact_mode still left ~25-30% of the page
     blank). Two independent corrections, applied in sequence:
     1. Overflow: if compact_mode still doesn't fit one page, retry once with
-       ultra_compact_mode (a small font-size nudge).
+       ultra_compact_mode - a tighter margin/spacing/font tier (not just a
+       font nudge; a resume dense enough to overflow compact_mode needs
+       real page real estate back, not just smaller glyphs).
     2. Underfill: if the (possibly still-compact) one-page render leaves the
        page visibly underfull (see _content_fill_ratio), step one tier
        looser - compact_mode off, or roomy_mode on - and keep that render

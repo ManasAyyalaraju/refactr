@@ -13,6 +13,22 @@ const apiClient = axios.create({
 
 export type ResumeFormat = 'regular' | 'technical';
 
+// axios's own error.message is a generic "Request failed with status code
+// 422" - the backend's actual explanation lives in the JSON error body's
+// "detail" field (FastAPI's HTTPException shape). Falls back to axios's
+// generic message when the error body isn't a parsed JSON object (e.g. a
+// PDF-output request whose error response came back as a Blob).
+function extractErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data;
+    if (data && typeof data === 'object' && typeof (data as { detail?: unknown }).detail === 'string') {
+      return (data as { detail: string }).detail;
+    }
+    return error.message || fallback;
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 export interface TailorResumeParams {
   // Provide exactly one of pdfFile / resumeJson. resumeJson (a previously-
   // parsed Resume from a saved base_resume) skips the backend's PDF parse.
@@ -97,7 +113,7 @@ export async function tailorResume({
     return {
       data: {} as TailoredResult,
       success: false,
-      error: error instanceof Error ? error.message : 'An error occurred',
+      error: extractErrorMessage(error, 'An error occurred'),
     };
   }
 }
@@ -130,7 +146,7 @@ export async function reformatResume({
     return {
       data: new Blob(),
       success: false,
-      error: error instanceof Error ? error.message : 'An error occurred',
+      error: extractErrorMessage(error, 'An error occurred'),
     };
   }
 }
@@ -166,7 +182,7 @@ export async function reparseResume(pdfFile: Blob, fileName: string): Promise<Re
     return {
       data: {} as ReparseResumeResult,
       success: false,
-      error: error instanceof Error ? error.message : 'An error occurred',
+      error: extractErrorMessage(error, 'An error occurred'),
     };
   }
 }
@@ -229,7 +245,33 @@ export async function parseJobDescription(
     return {
       data: {} as ParseJobDescriptionResult,
       success: false,
-      error: error instanceof Error ? error.message : 'An error occurred',
+      error: extractErrorMessage(error, 'An error occurred'),
+    };
+  }
+}
+
+export interface ValidatePdfResponse {
+  valid: boolean;
+  error?: string;
+}
+
+/**
+ * Cheap pre-upload check: does this PDF have a real text layer? Runs right
+ * after file selection, before the template step even renders, so a
+ * scanned/flattened-image PDF is rejected immediately instead of after a
+ * full reformat attempt.
+ */
+export async function validatePdfHasText(pdfFile: File | Blob, fileName?: string): Promise<ValidatePdfResponse> {
+  try {
+    const formData = new FormData();
+    formData.append('pdf', pdfFile, resolveFileName(pdfFile, fileName));
+
+    await apiClient.post('/api/resumes/validate-pdf', formData);
+    return { valid: true };
+  } catch (error) {
+    return {
+      valid: false,
+      error: extractErrorMessage(error, 'Could not validate your PDF. Please try again.'),
     };
   }
 }

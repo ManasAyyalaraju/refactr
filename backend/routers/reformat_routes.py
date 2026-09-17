@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import tempfile
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -11,10 +11,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from openai import AuthenticationError
 
 from core.config import settings
+from core.exceptions import UnreadablePdfError
 from core.timing import timed_stage
 from services.pdf_resume_parser import parse_pdf_resume_to_json
 from services.reformat_engine import reformat_resume
 from services.skill_inference import infer_plausible_skills_for_resume
+from services.skill_utils import parse_skill_line, merge_and_dedupe_skills
 from services.tailor_engine import ensure_technical_skills
 from services.pdf_writer import render_resume_pdf
 
@@ -62,21 +64,26 @@ async def reformat_resume_from_pdf(
         with timed_stage("parse_resume", timings):
             resume = await parse_pdf_resume_to_json(temp_path)
 
-        # Normalize skills from computer/technical skills strings into list
+        # Merge (never overwrite) skills from a dedicated Skills section with
+        # any separate "Computer/Technical Skills" line under Additional
+        # Info - a resume can have both (e.g. a full Skills section plus a
+        # throwaway tools mention inside the Summary paragraph, which the
+        # parser also faithfully captures into additional_info.computer_skills).
+        # Overwriting resume.skills with just that line's contents silently
+        # discarded the resume's real, already-listed skills. Once merged,
+        # clear the additional_info line - otherwise the template's Regular
+        # layout still renders only that short raw line instead of the full
+        # merged resume.skills list (it prefers additional_info when present).
+        line_skills: List[str] = []
         if getattr(resume.additional_info, "computer_skills", None):
-            raw_skills = resume.additional_info.computer_skills
-            for sep in ["|", ";"]:
-                raw_skills = raw_skills.replace(sep, ",")
-            parsed_skills = [s.strip() for s in raw_skills.split(",") if s.strip()]
-            if parsed_skills:
-                resume.skills = parsed_skills
+            line_skills = parse_skill_line(resume.additional_info.computer_skills)
+            resume.additional_info.computer_skills = ""
         elif getattr(resume.additional_info, "technical_skills", None):
-            raw_skills = resume.additional_info.technical_skills
-            for sep in ["|", ";"]:
-                raw_skills = raw_skills.replace(sep, ",")
-            parsed_skills = [s.strip() for s in raw_skills.split(",") if s.strip()]
-            if parsed_skills:
-                resume.skills = parsed_skills
+            line_skills = parse_skill_line(resume.additional_info.technical_skills)
+            resume.additional_info.technical_skills = ""
+
+        if line_skills:
+            resume.skills = merge_and_dedupe_skills(resume.skills or [], line_skills)
 
         # Categorize skills into TECHNICAL SKILLS *before* reformatting so the
         # compact-mode/spacing decision (computed inside reformat_resume) knows
@@ -122,6 +129,8 @@ async def reformat_resume_from_pdf(
                    f"Error: {str(e)}\n"
                    f"Get your API key from: https://platform.openai.com/account/api-keys"
         )
+    except UnreadablePdfError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception:
         logger.exception("reformat_resume_from_pdf failed")
         raise HTTPException(

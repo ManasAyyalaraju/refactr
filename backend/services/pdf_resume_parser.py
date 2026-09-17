@@ -1,7 +1,7 @@
 import re
 from datetime import datetime
 from core.config import settings
-from services.pdf_reader import extract_text_from_pdf
+from services.pdf_reader import extract_text_from_pdf_or_raise
 from models.resume_models import Resume
 from services.llm_client import client, _extract_parsed
 
@@ -97,7 +97,7 @@ async def parse_pdf_resume_to_json(file_path: str) -> Resume:
     if not client:
         raise RuntimeError("OpenAI client not configured - OPENAI_API_KEY is missing.")
 
-    raw_text = extract_text_from_pdf(file_path)
+    raw_text = extract_text_from_pdf_or_raise(file_path)
 
     prompt = f"""
 You are a resume parser.
@@ -115,7 +115,7 @@ I will give you RAW TEXT extracted from a PDF resume. Convert it into the resume
   * If the resume shows "Bachelor of Science in Computer Science" or "B.S., Computer Science", split it into degree="Bachelor of Science" and major="Computer Science"
 - If a GPA is present, put it in the "gpa" field as a short string (e.g. "3.6"). If no GPA is present, leave "gpa" empty.
 - If an education entry lists a "Relevant Coursework" (or "Related Coursework") line, put the course names in that education entry's "relevant_coursework" field as a single comma-separated string, exactly as listed. If not present, leave it empty.
-- DATE FORMATTING: Format all dates as "Month YYYY" (e.g., "December 2026", "October 2025", "April 2021"). Do NOT use "YYYY-MM" format. If only year is available, use just "YYYY".
+- DATE FORMATTING: Format all dates as "Month YYYY" (e.g., "December 2026", "October 2025", "April 2021"). Do NOT use "YYYY-MM" format. If only year is available, use just "YYYY" - do NOT invent a month. For example, if the source shows "2013 - 2021" with no month anywhere, output start_date="2013" and end_date="2021", NOT "January 2013"/"December 2021". Never default a missing month to January or December.
 - **PROJECTS SECTION**: The "projects" field should include content from sections labeled as:
   * "PROJECTS" or "Projects"
   * "EXTRACURRICULAR ACTIVITIES" or "Extracurricular Activities"
@@ -161,7 +161,7 @@ I will give you RAW TEXT extracted from a PDF resume. Convert it into the resume
 - "additional_info.professional_memberships" MUST be a list of strings (e.g., ["IEEE", "ACM", "American Medical Association"]).
 - Put email, phone number, LinkedIn URL, personal website/portfolio URL, and location inside the `contact` object (do NOT repeat them as top-level fields).
 - Extract "headline" if there's a professional title/headline below the name.
-- Extract "summary" if there's a professional summary, objective, or profile section.
+- Extract "summary" if there's a professional summary, objective, or profile section. Copy it COMPLETELY and VERBATIM, sentence for sentence - do not shorten it, paraphrase it, or silently drop any sentence from it, even one that seems redundant with the headline or skills.
 
 RAW RESUME TEXT:
 \"\"\"{raw_text}\"\"\"

@@ -14,6 +14,7 @@ import { uploadBaseResume, findBaseResumeByFileName, replaceBaseResume, BaseResu
 import {
   reformatResume,
   fetchTemplatePreview,
+  validatePdfHasText,
   base64ToFile,
   ReformatJsonResult,
   ResumeFormat,
@@ -30,6 +31,7 @@ export default function NewResumePage() {
   const [error, setError] = useState('');
   const [duplicateResume, setDuplicateResume] = useState<BaseResumeRow | null>(null);
   const [isCheckingDuplicate, setIsCheckingDuplicate] = useState(false);
+  const [isValidatingPdf, setIsValidatingPdf] = useState(false);
   const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -57,6 +59,19 @@ export default function NewResumePage() {
     setError('');
 
     if (!file || !user) return;
+
+    // Reject a scanned/flattened-image PDF right away - before the
+    // duplicate check or the template step ever render - instead of
+    // letting the user pick a template and wait through a full reformat
+    // only to hit the same error at the end.
+    setIsValidatingPdf(true);
+    const validation = await validatePdfHasText(file, file.name);
+    setIsValidatingPdf(false);
+    if (!validation.valid) {
+      setError(validation.error || 'This PDF could not be read. Please try a different file.');
+      setSelectedFile(null);
+      return;
+    }
 
     setIsCheckingDuplicate(true);
     try {
@@ -150,11 +165,15 @@ export default function NewResumePage() {
             )}
           </div>
 
-          {!isSaving && selectedFile && isCheckingDuplicate && (
+          {!isSaving && selectedFile && isValidatingPdf && (
+            <p className="text-sm text-gray-500 mb-8">Checking your PDF...</p>
+          )}
+
+          {!isSaving && selectedFile && !isValidatingPdf && isCheckingDuplicate && (
             <p className="text-sm text-gray-500 mb-8">Checking your saved resumes...</p>
           )}
 
-          {!isSaving && selectedFile && !isCheckingDuplicate && !duplicateResume && (
+          {!isSaving && selectedFile && !isValidatingPdf && !isCheckingDuplicate && !duplicateResume && (
             <>
               <div className="bg-[#fffcfc] border border-[#504b4b] rounded-[4px] p-8 mb-8">
                 <div className="mb-6">

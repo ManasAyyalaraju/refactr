@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import tempfile
 from typing import List, Dict, Any, Optional
 
@@ -13,7 +12,7 @@ from openai import AuthenticationError
 from pydantic import ValidationError
 
 from core.config import settings
-from core.exceptions import TailoringGenerationError
+from core.exceptions import TailoringGenerationError, UnreadablePdfError
 from core.timing import timed_stage
 from models.resume_models import Resume
 from services.pdf_resume_parser import parse_pdf_resume_to_json
@@ -22,41 +21,16 @@ from services.tailor_engine import tailor_resume, ensure_technical_skills
 from services.pdf_writer import render_resume_pdf
 from services.skill_inference import match_inferred_skills_to_jd, _resume_background_text
 from services.bullet_verifier import _contains_skill
+from services.skill_utils import (
+    normalize_skill as _normalize_skill,
+    parse_skill_line as _parse_skill_line,
+    merge_and_dedupe_skills as _merge_and_dedupe_skills,
+)
 from services.llm_client import classify_confirmed_skills
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Tailoring"])
-
-
-def _normalize_skill(skill: str) -> str:
-    """Lowercase and collapse whitespace for matching."""
-    return re.sub(r"\s+", " ", skill.strip().lower())
-
-
-def _parse_skill_line(raw_skills: str) -> List[str]:
-    """Split a pipe/comma/semicolon-separated skill line into a list."""
-    if not raw_skills:
-        return []
-    normalized = raw_skills
-    for sep in ["|", ";"]:
-        normalized = normalized.replace(sep, ",")
-    return [s.strip() for s in normalized.split(",") if s.strip()]
-
-
-def _merge_and_dedupe_skills(*skill_lists: List[str]) -> List[str]:
-    merged: List[str] = []
-    seen = set()
-    for skills in skill_lists:
-        for skill in skills or []:
-            clean = skill.strip()
-            if not clean:
-                continue
-            key = _normalize_skill(clean)
-            if key not in seen:
-                seen.add(key)
-                merged.append(clean)
-    return merged
 
 
 def _compute_compatibility(
@@ -415,6 +389,8 @@ async def tailor_resume_from_pdf(
             status_code=502,
             detail="Resume tailoring failed. Please try again."
         )
+    except UnreadablePdfError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception:
         logger.exception("tailor_resume_from_pdf failed")
         raise HTTPException(
