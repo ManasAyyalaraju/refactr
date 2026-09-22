@@ -116,3 +116,6 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# /brag launch video output (generated marketing asset, not app source)
+brag-output/
+
