@@ -20484,6 +20484,13 @@ ${suffix}`;
   // src/panel-app.ts
   var POLL_INTERVAL_MS = 1500;
   var POLL_TIMEOUT_MS = 3 * 60 * 1e3;
+  var COUNT_UP_DELAY_MS = 5e3;
+  var COUNT_UP_MS_PER_POINT = 90;
+  var COUNT_UP_MIN_MS = 1500;
+  var COUNT_UP_MAX_MS = 3200;
+  function easeInOutSine(t) {
+    return -(Math.cos(Math.PI * t) - 1) / 2;
+  }
   function sanitizeFilenamePart(value) {
     return value.replace(/[\\/:*?"<>|]/g, "").trim();
   }
@@ -20492,9 +20499,12 @@ ${suffix}`;
     if (parts.length === 0) return "Tailored Resume.pdf";
     return `${[...parts, "Resume"].join(" - ")}.pdf`;
   }
-  function mountPanelApp({ container, jobContext, onClose }) {
+  function mountPanelApp({ container, jobContext, collapsible }) {
     const supabase = getSupabaseClient();
     let pollHandle2 = null;
+    let countUpTimer = null;
+    let countUpFrame = 0;
+    let collapsed = false;
     const state = {
       screen: "loading",
       user: null,
@@ -20503,25 +20513,83 @@ ${suffix}`;
       resumeFormat: "regular",
       errorMessage: "",
       lastScore: null,
+      lastOriginalScore: null,
+      displayScore: null,
+      scoreAnimDone: true,
       lastResultId: null,
       pickerSkills: [],
       selectedSkills: /* @__PURE__ */ new Set()
     };
     function render() {
       container.innerHTML = `
-      <div class="refactr-panel">
+      <div class="refactr-panel${collapsed ? " refactr-panel-collapsed" : ""}">
         ${renderHeader()}
-        <div class="refactr-body">${renderBody()}</div>
+        ${collapsed ? "" : `<div class="refactr-body">${renderBody()}</div>`}
       </div>
     `;
       bindEvents();
+    }
+    function scoreImprovement() {
+      if (state.lastScore === null || state.lastOriginalScore === null) return 0;
+      return Math.max(0, state.lastScore - state.lastOriginalScore);
+    }
+    function renderScore(finalScore) {
+      const improvement = scoreImprovement();
+      const delta = improvement ? `<span class="refactr-score-delta${state.scoreAnimDone ? " refactr-score-delta-visible" : ""}" data-role="score-delta">&uarr;${improvement}</span>` : "";
+      return `
+      <div class="refactr-score">
+        <span class="refactr-score-number"><strong data-role="score-value">${state.displayScore ?? finalScore}</strong>${delta}</span>
+        <div class="refactr-score-label">match score</div>
+      </div>
+    `;
+    }
+    function stopScoreCountUp() {
+      if (countUpTimer) clearTimeout(countUpTimer);
+      cancelAnimationFrame(countUpFrame);
+      countUpTimer = null;
+    }
+    function startScoreCountUp() {
+      stopScoreCountUp();
+      const to = state.lastScore;
+      const from = state.lastOriginalScore;
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      if (to === null || from === null || from >= to || reduceMotion) {
+        state.displayScore = to;
+        state.scoreAnimDone = true;
+        return;
+      }
+      state.displayScore = from;
+      state.scoreAnimDone = false;
+      const duration = Math.min(COUNT_UP_MAX_MS, Math.max(COUNT_UP_MIN_MS, (to - from) * COUNT_UP_MS_PER_POINT));
+      let start = null;
+      const tick = (now) => {
+        if (start === null) start = now;
+        const t = Math.min(1, (now - start) / duration);
+        const next = Math.round(from + (to - from) * easeInOutSine(t));
+        if (next !== state.displayScore) {
+          state.displayScore = next;
+          const valueEl = container.querySelector('[data-role="score-value"]');
+          if (valueEl) valueEl.textContent = String(next);
+        }
+        if (t < 1) {
+          countUpFrame = requestAnimationFrame(tick);
+        } else {
+          state.scoreAnimDone = true;
+          container.querySelector('[data-role="score-delta"]')?.classList.add("refactr-score-delta-visible");
+        }
+      };
+      countUpTimer = setTimeout(() => {
+        countUpFrame = requestAnimationFrame(tick);
+      }, COUNT_UP_DELAY_MS);
     }
     function renderHeader() {
       return `
       <div class="refactr-header">
         <div class="refactr-logo"><span></span><span></span></div>
         <div class="refactr-brand">refactr</div>
-        ${onClose ? '<button type="button" class="refactr-close" data-action="close">&times;</button>' : ""}
+        ${collapsible ? `<button type="button" class="refactr-collapse" data-action="toggle-collapse" aria-label="${collapsed ? "Expand" : "Minimize"} refactr" aria-expanded="${!collapsed}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="${collapsed ? "6 15 12 9 18 15" : "6 9 12 15 18 9"}"></polyline></svg>
+              </button>` : ""}
       </div>
     `;
     }
@@ -20551,7 +20619,7 @@ ${suffix}`;
           return `
           <div class="refactr-status">
             <p>&#10003; Tailored resume downloaded.</p>
-            ${state.lastScore !== null ? `<p class="refactr-score"><strong>${state.lastScore}</strong> match score</p>` : ""}
+            ${state.lastScore !== null ? renderScore(state.lastScore) : ""}
             <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
               ${state.lastResultId ? `<button type="button" class="refactr-btn" data-action="view-details">View Detailed Results</button>` : ""}
               <button type="button" class="refactr-btn refactr-btn-secondary" data-action="reset">Tailor another</button>
@@ -20644,9 +20712,10 @@ ${suffix}`;
     `;
     }
     function bindEvents() {
-      container.querySelector('[data-action="close"]')?.addEventListener("click", () => {
-        stopPolling();
-        onClose?.();
+      const toggleTarget = collapsed ? ".refactr-header" : '[data-action="toggle-collapse"]';
+      container.querySelector(toggleTarget)?.addEventListener("click", () => {
+        collapsed = !collapsed;
+        render();
       });
       container.querySelector('[data-action="login"]')?.addEventListener("click", handleLoginClick);
       container.querySelector('[data-action="cancel-login"]')?.addEventListener("click", () => {
@@ -20656,7 +20725,10 @@ ${suffix}`;
       });
       container.querySelector('[data-action="tailor"]')?.addEventListener("click", handleTailor);
       container.querySelector('[data-action="reset"]')?.addEventListener("click", () => {
+        stopScoreCountUp();
         state.lastScore = null;
+        state.lastOriginalScore = null;
+        state.displayScore = null;
         state.lastResultId = null;
         state.pickerSkills = [];
         state.selectedSkills = /* @__PURE__ */ new Set();
@@ -20868,8 +20940,10 @@ ${suffix}`;
           resumeSkills: tailorResult.resumeSkills
         });
         state.lastScore = tailorResult.compatibility?.score ?? null;
+        state.lastOriginalScore = tailorResult.compatibility?.original_score ?? null;
         state.lastResultId = saved?.id ?? null;
         state.screen = "done";
+        startScoreCountUp();
         render();
       } catch (err) {
         state.errorMessage = err instanceof Error ? err.message : "Something went wrong.";
@@ -20970,10 +21044,7 @@ ${suffix}`;
       mountPanelApp({
         container: panelContainer,
         jobContext: freshJobContext,
-        onClose: () => {
-          dismissedForThisPage = true;
-          teardown();
-        }
+        collapsible: true
       });
     });
   }
