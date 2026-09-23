@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 
 import pdfplumber
+from pdfplumber.utils import chars_to_textmap
 
 from core.exceptions import UnreadablePdfError
 
@@ -69,10 +70,31 @@ def _find_column_gutter(page) -> Optional[Tuple[float, float, float]]:
     return (best_start * step, (best_start + best_len) * step, header_bottom)
 
 
+def _text_by_baseline(page_like) -> str:
+    """
+    Same output as page.extract_text(), but lines are grouped by each
+    character's BASELINE (bottom edge) instead of its top edge. pdfplumber
+    clusters lines by top edge with a 3pt tolerance, and a small-caps line
+    ("MAMATHA VITTALKAR", "Chief Financial Officer") has oversized first
+    letters whose tops sit 4-5pt above the rest of the line, so they got
+    split onto their own line ("M V" above "AMATHA ITTALKAR") and the parser
+    then read the name as "AMATHA ITTALKAR". Every character on one printed
+    line shares a baseline whatever its size, so grouping on that fixes it
+    without changing how genuinely separate lines are split (widening
+    y_tolerance instead also fixed it, but char-interleaved unrelated lines
+    on other resumes).
+    """
+    chars = []
+    for c in page_like.chars:
+        top = c["bottom"] - 10.0
+        chars.append({**c, "top": top, "height": 10.0, "doctop": c["doctop"] + (top - c["top"])})
+    return chars_to_textmap(chars).as_string if chars else ""
+
+
 def _extract_page_text(page) -> str:
     gutter = _find_column_gutter(page)
     if not gutter:
-        return page.extract_text() or ""
+        return _text_by_baseline(page)
 
     gutter_x0, gutter_x1, header_bottom = gutter
     px0, py0, px1, py1 = page.bbox
@@ -86,7 +108,7 @@ def _extract_page_text(page) -> str:
     header = page.crop((px0, py0, px1, header_bottom))
     left = page.crop((px0, header_bottom, gutter_x0, py1))
     right = page.crop((gutter_x1, header_bottom, px1, py1))
-    parts = [header.extract_text() or "", left.extract_text() or "", right.extract_text() or ""]
+    parts = [_text_by_baseline(c) for c in (header, left, right)]
     return "\n".join(p for p in parts if p)
 
 
@@ -96,6 +118,14 @@ def extract_text_from_pdf(path: str) -> str:
         for page in pdf.pages:
             text += _extract_page_text(page) + "\n"
     return text.strip()
+
+
+def count_content_pages(path: str) -> int:
+    """Number of pages that actually carry text - a stray blank trailing page
+    (common in exported PDFs) shouldn't make a 1-page resume look like a
+    2-page one. Always at least 1."""
+    with pdfplumber.open(path) as pdf:
+        return max(1, sum(1 for page in pdf.pages if page.chars))
 
 
 def extract_text_from_pdf_or_raise(path: str) -> str:

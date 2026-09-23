@@ -109,6 +109,7 @@ class Resume(BaseModel):
     additional_info: Optional[AdditionalInfo] = None
     
     # Formatting control
+    target_pages: int = 1  # Page budget for rendering: 1 or 2. Set deterministically from the uploaded PDF's own page count (never by the LLM) - a 2-page source is reformatted to 2 pages, and never squeezed by compact/ultra-compact spacing
     compact_mode: bool = False  # If True, use minimal spacing to fit on one page
     ultra_compact_mode: bool = False  # If True, also nudge the font size down slightly - set automatically by render_resume_pdf when compact spacing alone isn't enough to fit one page
     roomy_mode: bool = False  # If True, use looser-than-default spacing - set automatically by render_resume_pdf when a one-page render still leaves the page visibly underfull

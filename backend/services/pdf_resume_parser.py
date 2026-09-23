@@ -1,9 +1,16 @@
+import json
+import logging
 import re
 from datetime import datetime
+from openai import LengthFinishReasonError
 from core.config import settings
-from services.pdf_reader import extract_text_from_pdf_or_raise
-from models.resume_models import Resume
+from services.pdf_reader import count_content_pages, extract_text_from_pdf_or_raise
+from models.resume_models import Resume, TechnicalSkillCategory
+from services.skill_sections import extract_heading_skill_categories
+from services.skill_utils import merge_and_dedupe_skills
 from services.llm_client import client, _extract_parsed
+
+logger = logging.getLogger(__name__)
 
 
 ENRICHMENT_PATTERNS = {
@@ -23,6 +30,18 @@ ENRICHMENT_PATTERNS = {
     "power bi": r"\bpower\s*bi\b",
     "excel": r"\bexcel\b",
     "loRa": r"\blora\b",
+}
+
+
+# Enrichment keys above are lowercase match keys, not display names - a
+# skill added from a bullet's text otherwise rendered as "sql" / "typescript"
+# / "html5" on the final resume.
+_ENRICHMENT_DISPLAY_NAMES = {
+    "next.js": "Next.js", "typescript": "TypeScript", "javascript": "JavaScript",
+    "html5": "HTML5", "css": "CSS", "react": "React", "node.js": "Node.js",
+    "python": "Python", "sql": "SQL", "postgresql": "PostgreSQL", "mysql": "MySQL",
+    "jira": "Jira", "tableau": "Tableau", "power bi": "Power BI", "excel": "Excel",
+    "loRa": "LoRa",
 }
 
 
@@ -48,7 +67,7 @@ def _enrich_skills_from_text(raw_text: str, current_skills: list[str]) -> list[s
     lower_text = raw_text.lower()
     for canonical, pattern in ENRICHMENT_PATTERNS.items():
         if re.search(pattern, lower_text, re.IGNORECASE):
-            found.append(canonical)
+            found.append(_ENRICHMENT_DISPLAY_NAMES.get(canonical, canonical))
 
     return _merge_and_dedupe_skills(current_skills, found)
 
@@ -85,6 +104,64 @@ def format_date(date_str: str) -> str:
     return date_str
 
 
+_MAX_RETRY_MISSING_BULLETS = 4
+_MAX_PARSE_OUTPUT_TOKENS = 6000
+_BULLET_LINE = re.compile(r"^\s*[\u2022\u25cf\u25aa\u25a0\u25e6\u2219\u00b7*\-\u2013]\s+(.*\S)")
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def _missing_source_bullets(raw_text: str, resume: Resume) -> list:
+    """
+    Bullet lines present in the source text but nowhere in the parsed
+    resume. The LLM parse can silently drop the trailing bullet(s) of a long
+    resume's last entry (observed live: 4 of 5 runs on one resume, at
+    temperature 0), and nothing downstream would ever notice - the resume
+    just comes out shorter. Matching on a normalized prefix of each
+    marker-led line (not the full line) keeps this immune to wrapped
+    continuation lines and to light cleanup of trailing punctuation.
+    """
+    parsed_pool = _norm_text(json.dumps(resume.model_dump(), ensure_ascii=False))
+    missing = []
+    for line in raw_text.split("\n"):
+        match = _BULLET_LINE.match(line)
+        if not match:
+            continue
+        normalized = _norm_text(match.group(1))
+        if len(normalized) >= 12 and normalized[:40] not in parsed_pool:
+            missing.append(match.group(1))
+    return missing
+
+
+_CERT_MARKER = re.compile(r"^\s*(?:[\u2022\u25cf\u25aa\u25a0\u25e6\u2219\u00b7*\-\u2013]|\(cid:\d+\))\s*")
+
+
+def _restore_certification_details(raw_text: str, certifications: list) -> list:
+    """
+    The LLM sometimes trims a certification down to its name and drops the
+    date that follows it ("... (AZ-304), April 2022" -> "... (AZ-304)"),
+    and does so unpredictably from run to run. Each certification is a
+    single self-contained source line, so when a parsed cert is a prefix of
+    a source line that carries a short extra tail (the date), use the
+    source line as written.
+    """
+    source_lines = [_CERT_MARKER.sub("", line).strip() for line in raw_text.split("\n")]
+    restored = []
+    for cert in certifications:
+        key = _norm_text(cert)
+        replacement = cert
+        if len(key) >= 12:
+            for line in source_lines:
+                line_key = _norm_text(line)
+                if line_key.startswith(key) and 0 < len(line_key) - len(key) <= 30:
+                    replacement = line.rstrip(" .")
+                    break
+        restored.append(replacement)
+    return restored
+
+
 async def parse_pdf_resume_to_json(file_path: str) -> Resume:
     """
     1) Extract raw text from the PDF
@@ -106,6 +183,7 @@ I will give you RAW TEXT extracted from a PDF resume. Convert it into the resume
 
 - Extract ONLY information that actually appears in the resume text.
 - Do NOT invent jobs, dates, companies, or skills.
+- **COMPLETENESS**: Include EVERY bullet point that appears under every job, project, and leadership/volunteer entry - do not omit, merge, or summarize any, and pay particular attention to the LAST bullets of the LAST entry in each section, which are the easiest to drop by accident. The number of bullets you output for an entry must equal the number in the source. Also keep any UN-bulleted supporting lines that belong to an entry - for example a list of client or employer names, locations, or dated sub-engagements listed under a consulting role - as bullets of that entry, exactly as written. Never drop them just because they lack a bullet marker.
 - If a field is missing, leave it empty.
 - **NAME EXTRACTION**: The "name" field should be extracted from the very top of the resume, typically the largest text at the beginning. Extract the COMPLETE full name EXACTLY as it appears, including ALL letters. Do NOT truncate or skip any characters. If the name appears incomplete or garbled in the text extraction, check the email address for clues (e.g., if email is "Aswath.Manu@utdallas.edu", the name is likely "Aswath Manu" not "Swath Manu"). Examples of CORRECT extraction: "Aswath Manu", "John Smith", "Maria Garcia-Lopez".
 - "education" MUST be a list (it can have just 1 item, or empty list if no education section).
@@ -167,13 +245,81 @@ RAW RESUME TEXT:
 \"\"\"{raw_text}\"\"\"
 """
 
-    response = await client.chat.completions.parse(
-        model=settings.openai_model_fast,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=Resume,
-        temperature=0,
-    )
-    resume_obj = _extract_parsed(response.choices[0].message)
+    async def _parse_once() -> Resume:
+        # Structured-output generation can occasionally degenerate into an
+        # endless run of whitespace inside the JSON (observed live: several
+        # runs in a row on one resume) until it hits the 16k-token limit,
+        # which takes over a minute and then raises. Cap the output well
+        # above any real resume's size so a runaway fails in seconds, and
+        # retry once - a fresh sample almost always completes normally.
+        for attempt in (1, 2):
+            try:
+                response = await client.chat.completions.parse(
+                    model=settings.openai_model_fast,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format=Resume,
+                    temperature=0,
+                    max_tokens=_MAX_PARSE_OUTPUT_TOKENS,
+                )
+            except LengthFinishReasonError:
+                if attempt == 2:
+                    raise
+                logger.warning("Resume parse hit the output-token cap (runaway generation) - retrying once")
+                continue
+            return _extract_parsed(response.choices[0].message)
+
+    resume_obj = await _parse_once()
+
+    # Bounded completeness check: if a few source bullets went missing,
+    # re-parse once and keep whichever attempt lost fewer. Never loops
+    # further. Only a SMALL gap is the dropped-trailing-bullets signature;
+    # a large one means bullets were legitimately restructured (a bulleted
+    # skills section becomes skill names, not verbatim bullets), which a
+    # retry can't and shouldn't "fix" - and would just cost another LLM call.
+    missing = _missing_source_bullets(raw_text, resume_obj)
+    if len(missing) > _MAX_RETRY_MISSING_BULLETS:
+        logger.info("%d source bullet lines not found verbatim in the parsed resume (likely a bulleted skills section restructured into skills) - not retrying", len(missing))
+    elif missing:
+        retry_obj = await _parse_once()
+        retry_missing = _missing_source_bullets(raw_text, retry_obj)
+        if len(retry_missing) < len(missing):
+            resume_obj, missing = retry_obj, retry_missing
+        if missing:
+            logger.warning("Resume parse still missing %d source bullet(s) after retry: %s", len(missing), [m[:60] for m in missing])
+
+    # Page budget comes from the upload's own length, never from the LLM (it
+    # is part of the structured-output schema, so the model would otherwise
+    # fill in an arbitrary value). Capped at 2 - a longer source is condensed
+    # to 2 pages rather than reproduced at full length.
+    resume_obj.target_pages = min(count_content_pages(file_path), 2)
+
+    if resume_obj.additional_info and resume_obj.additional_info.certifications:
+        resume_obj.additional_info.certifications = _restore_certification_details(
+            raw_text, resume_obj.additional_info.certifications
+        )
+
+    # A skills section laid out as bold category headings over comma-separated
+    # paragraphs is detected from the PDF's own fonts rather than trusted to
+    # the LLM, which files the headings as skills, drops the category
+    # structure, and loses the tool names listed in parentheses about half
+    # the time. See skill_sections.py.
+    heading_categories = extract_heading_skill_categories(file_path)
+    if heading_categories:
+        labels = {label.lower() for label, _ in heading_categories}
+        source_skills = [atom for _, items in heading_categories for atom in items]
+        # Also drop the LLM's re-split fragments of an item the source already
+        # lists whole ("microservices" / "SOA" next to "microservices & SOA") -
+        # kept, they get reassigned into the categories as duplicates.
+        atom_texts = [a.lower() for a in source_skills]
+        other_skills = [
+            x for x in (resume_obj.skills or [])
+            if x.strip().lower() not in labels
+            and not any(re.search(r"(?<![\w])" + re.escape(x.strip().lower()) + r"(?![\w])", a) for a in atom_texts)
+        ]
+        resume_obj.skills = merge_and_dedupe_skills(source_skills, other_skills)
+        resume_obj.technical_skills = [
+            TechnicalSkillCategory(label=label, items=items) for label, items in heading_categories
+        ]
 
     # Enrich skills with direct text scan (to capture tools in bullets/projects)
     resume_obj.skills = _enrich_skills_from_text(raw_text, resume_obj.skills or [])

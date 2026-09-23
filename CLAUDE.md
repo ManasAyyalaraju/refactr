@@ -46,6 +46,8 @@ All except `/`, `/login`, `/signup` are auth-protected via `frontend/proxy.ts`.
 
 Single LaTeX template (`backend/templates/resume_template.tex`) with a togglable categorized **TECHNICAL SKILLS** section (`resume.technical_skills`, a list of `{label, items}`). `render_resume_pdf(resume, use_technical_skills: bool)` in `backend/services/pdf_writer.py` controls which variant renders — "Regular" vs "Technical" is purely a render-time flag, not two separate templates.
 
+**Page budget:** `Resume.target_pages` (1 or 2) is set from the uploaded PDF's own page count at parse time and persists with the saved resume. 1-page resumes are fit to one page (`compact_mode`, then `ultra_compact_mode` if still overflowing); 2-page resumes are rendered at normal spacing, keep their summary, and never enter compact/ultra-compact mode. See `memory.md`.
+
 ## Local dev
 
 - Backend: `cd backend && venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000 --reload`. Port 8000 is hardcoded in `frontend/.env.local` and `extension/src/lib/config.ts` — don't let it float to another port.

@@ -106,13 +106,31 @@
   \contactvspace
 }
 
-\newcommand{\resumeSubheading}[4]{
+% Entry header: organization (bold) -- role (italic) on the left, dates on
+% the right. Either left-hand piece may be empty (e.g. a sub-role with no
+% named employer) - the " -- " separator only appears when both exist. The
+% date box is normally 0.25\textwidth but grows to fit a long date range
+% ("September 2001 -- November 2002") instead of wrapping onto a 2nd line,
+% with the left box shrinking to match; for ordinary dates both widths are
+% exactly what they always were (0.7 / 0.25).
+\newlength{\rsDateW}
+\newlength{\rsLeftW}
+\newlength{\rsRightW}
+\newcommand{\resumeSubheading}[4]{%
+  \settowidth{\rsDateW}{#3 -- #4}%
+  \setlength{\rsRightW}{0.25\textwidth}%
+  \ifdim\dimexpr\rsDateW+2pt\relax>\rsRightW\setlength{\rsRightW}{\dimexpr\rsDateW+2pt\relax}\fi%
+  \setlength{\rsLeftW}{\dimexpr\textwidth-\rsRightW-0.03\textwidth\relax}%
+  \ifdim\rsLeftW>0.7\textwidth\setlength{\rsLeftW}{0.7\textwidth}\fi%
   \noindent
-  \begin{minipage}[t]{0.7\textwidth}
-    \textbf{#1} -- \textit{#2}
+  \begin{minipage}[t]{\rsLeftW}%
+    \def\rsOrg{#1}\def\rsRole{#2}%
+    \ifx\rsOrg\empty\else\textbf{#1}\fi%
+    \ifx\rsOrg\empty\else\ifx\rsRole\empty\else{} -- \fi\fi%
+    \ifx\rsRole\empty\else\textit{#2}\fi%
   \end{minipage}
   \hfill
-  \begin{minipage}[t]{0.25\textwidth}
+  \begin{minipage}[t]{\rsRightW}
     \raggedleft #3 -- #4
   \end{minipage}
   \vspace{1pt}
@@ -260,7 +278,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.experience %}
 \section*{EXPERIENCE}
 %{ for exp in resume.experience %}
-\resumeSubheading{VAR{exp.company|escape_latex}%{ if exp.location %}, VAR{exp.location|escape_latex}%{ endif %}}{VAR{exp.title|escape_latex}}{%{ if exp.start_date %}VAR{exp.start_date|escape_latex}%{ endif %}}{%{ if exp.end_date %}VAR{exp.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{((exp.company, exp.location)|select|join(', '))|escape_latex}}{VAR{exp.title|escape_latex}}{%{ if exp.start_date %}VAR{exp.start_date|escape_latex}%{ endif %}}{%{ if exp.end_date %}VAR{exp.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if exp.bullets %}
 \begin{itemize}
 %{ for bullet in exp.bullets %}
@@ -300,7 +318,7 @@ VAR{resume.summary|escape_latex}
   %{ if not is_minor_leadership %}
 \section*{LEADERSHIP}
 %{ for lead in resume.leadership %}
-\resumeSubheading{VAR{lead.organization|escape_latex}%{ if lead.location %}, VAR{lead.location|escape_latex}%{ endif %}}{%{ if lead.role %}VAR{lead.role|escape_latex}%{ endif %}}{%{ if lead.start_date %}VAR{lead.start_date|escape_latex}%{ endif %}}{%{ if lead.end_date %}VAR{lead.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{((lead.organization, lead.location)|select|join(', '))|escape_latex}}{%{ if lead.role %}VAR{lead.role|escape_latex}%{ endif %}}{%{ if lead.start_date %}VAR{lead.start_date|escape_latex}%{ endif %}}{%{ if lead.end_date %}VAR{lead.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if lead.bullets %}
 \begin{itemize}
 %{ for bullet in lead.bullets %}
@@ -319,7 +337,7 @@ VAR{resume.summary|escape_latex}
 %{ if resume.volunteer_work %}
 \section*{VOLUNTEER WORK}
 %{ for vol in resume.volunteer_work %}
-\resumeSubheading{VAR{vol.organization|escape_latex}%{ if vol.location %}, VAR{vol.location|escape_latex}%{ endif %}}{%{ if vol.role %}VAR{vol.role|escape_latex}%{ endif %}}{%{ if vol.start_date %}VAR{vol.start_date|escape_latex}%{ endif %}}{%{ if vol.end_date %}VAR{vol.end_date|escape_latex}%{ else %}Present%{ endif %}}
+\resumeSubheading{VAR{((vol.organization, vol.location)|select|join(', '))|escape_latex}}{%{ if vol.role %}VAR{vol.role|escape_latex}%{ endif %}}{%{ if vol.start_date %}VAR{vol.start_date|escape_latex}%{ endif %}}{%{ if vol.end_date %}VAR{vol.end_date|escape_latex}%{ else %}Present%{ endif %}}
 %{ if vol.bullets %}
 \begin{itemize}
 %{ for bullet in vol.bullets %}

@@ -225,6 +225,9 @@ def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> byte
         render_target.technical_skills = []
     _dedupe_additional_info_against_leadership(render_target)
 
+    if render_target.target_pages >= 2:
+        return _render_multi_page_pdf(render_target)
+
     pdf_bytes = _compile_resume_pdf(render_target)
 
     try:
@@ -257,6 +260,37 @@ def render_resume_pdf(resume: Resume, use_technical_skills: bool = True) -> byte
                 pdf_bytes = looser_pdf_bytes
     except Exception:
         pass
+
+    return pdf_bytes
+
+
+def _render_multi_page_pdf(render_target: Resume) -> bytes:
+    """
+    Render a resume whose page budget is 2 pages (it was uploaded as 2).
+
+    Everything the one-page path does to force a fit is off here:
+    ultra_compact_mode is reserved for dense ONE-page resumes and never
+    applies, and neither does the underfill/roomy stepping (it measures
+    page 1's fill, which is meaningless when content is meant to flow onto
+    a second page). Content starts at the default spacing; only if it
+    overflows the 2-page budget does it step down to compact_mode - the
+    single bounded correction available - and if that still doesn't fit,
+    the best render is shipped rather than compressing further.
+    """
+    render_target.compact_mode = False
+    render_target.ultra_compact_mode = False
+    render_target.roomy_mode = False
+
+    pdf_bytes = _compile_resume_pdf(render_target)
+
+    try:
+        page_count = _count_pdf_pages(pdf_bytes)
+    except Exception:
+        return pdf_bytes
+
+    if page_count > render_target.target_pages:
+        render_target.compact_mode = True
+        pdf_bytes = _compile_resume_pdf(render_target)
 
     return pdf_bytes
 

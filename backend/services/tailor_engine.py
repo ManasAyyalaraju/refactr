@@ -103,7 +103,13 @@ def compute_compact_mode(resume: Resume) -> bool:
     formulas. Page-fit precision from here on is handled by render_resume_pdf
     measuring the actual rendered output (see pdf_writer.py's roomy_mode
     stepping) - this only needs to pick a reasonable starting tier.
+
+    Compact mode only exists to squeeze a dense resume onto ONE page - a
+    resume whose page budget is 2 pages is never compact.
     """
+    if resume.target_pages >= 2:
+        return False
+
     fullness_score = estimate_resume_fullness(resume)
     total_bullets = (
         sum(len(exp.bullets) for exp in resume.experience) +
@@ -129,7 +135,12 @@ def conditionally_remove_headline_summary(resume: Resume) -> Resume:
     Threshold guideline:
     - Score < 35: Resume is sparse, KEEP headline/summary if present
     - Score >= 35: Resume is full, REMOVE headline/summary to save space
+
+    A 2-page resume has the room, so its headline/summary is always kept.
     """
+    if resume.target_pages >= 2:
+        return resume
+
     FULLNESS_THRESHOLD = 35  # Raised from 30
 
     fullness_score = estimate_resume_fullness(resume)
@@ -165,14 +176,22 @@ def conditionally_remove_headline_summary(resume: Resume) -> Resume:
     return resume
 
 
+MAX_TITLE_CASE_WORDS = 5
+
+
 def format_skill(skill: str) -> str:
     """
     Format a skill string:
     - If it's a tool (no commas or "and"), keep it as is
     - If it's a concept phrase (contains commas or "and"), capitalize first letter of every word
     """
-    # Check if it's a concept phrase (contains commas or " and " with spaces)
-    if "," in skill or re.search(r'\s+and\s+', skill, re.IGNORECASE):
+    # Check if it's a concept phrase (contains commas or " and " with spaces).
+    # Only SHORT phrases get title-cased ("Data Analysis and Reporting"): a
+    # long item is a sentence (e.g. a "Core Competencies" bullet the parser
+    # filed as a skill), and title-casing "Leadership in technology and
+    # managing large-scale engineering teams" into "Leadership In Technology
+    # And Managing..." just mangles it - leave those exactly as written.
+    if len(skill.split()) <= MAX_TITLE_CASE_WORDS and ("," in skill or re.search(r'\s+and\s+', skill, re.IGNORECASE)):
         # Title case: capitalize first letter of every word
         # Split by word boundaries to handle punctuation properly
         def capitalize_word(word: str) -> str:
@@ -702,8 +721,11 @@ async def tailor_resume(
         # needs a clear, catchable signal that tailoring failed.
         raise TailoringGenerationError(f"Resume tailoring failed: {e}") from e
 
-    # Preserve compact_mode setting
+    # Preserve compact_mode and the page budget - both are part of the
+    # structured-output schema the LLM just filled in, but neither is ever
+    # its call to make
     rewritten_resume.compact_mode = resume.compact_mode
+    rewritten_resume.target_pages = resume.target_pages
 
     # Preserve categorized technical skills exactly as parsed - never LLM-rewritten
     rewritten_resume.technical_skills = original_technical_skills

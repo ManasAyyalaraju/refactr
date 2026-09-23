@@ -115,11 +115,15 @@ async def reformat_resume(resume: Resume) -> Resume:
     - Preserve bullets; no rewriting
     - Drop headline/summary when compact/full
     - Add headline/summary ONLY when missing and resume is not compact
+    - A 2-page resume is left alone on both counts: it has the room to keep
+      what it has, and isn't sparse, so nothing gets generated for it either
     """
     resume = _trim_resume_strings(resume)
     resume.compact_mode = compute_compact_mode(resume)
 
-    if resume.compact_mode:
+    if resume.target_pages >= 2:
+        pass
+    elif resume.compact_mode:
         resume = conditionally_remove_headline_summary(resume)
     else:
         resume = await _generate_headline_summary_if_missing(resume)

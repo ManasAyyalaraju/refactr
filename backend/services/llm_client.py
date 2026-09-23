@@ -86,6 +86,10 @@ async def rewrite_resume_sections(resume_json: dict, job_json: dict, domain_info
     # Use compact_mode from the resume object (already calculated in tailor_engine.py)
     # This determines whether we need tight spacing AND short bullets
     is_compact = resume_json.get("compact_mode", False)
+    # A 2-page resume is neither compressed (compact) nor expanded (sparse):
+    # its bullets already have the room they need, so tailoring just holds
+    # each one at its original length.
+    is_multipage = (resume_json.get("target_pages", 1) or 1) >= 2
 
     industry = domain_info.get("industry", "General / Hybrid")
     sub_domain = domain_info.get("sub_domain", "General Business")
@@ -108,7 +112,31 @@ async def rewrite_resume_sections(resume_json: dict, job_json: dict, domain_info
     focus_skills = ", ".join(must + nice)
 
     # Build examples and instructions based on resume type
-    if is_compact:
+    if is_multipage:
+        primary_rule = f"""
+=========================================
+⚠️ PRIMARY RULE: TAILOR TO THE JOB - KEEP EACH BULLET'S LENGTH ⚠️
+=========================================
+
+RESUME TYPE: MULTI-PAGE (2 pages) - do NOT compress bullets and do NOT expand them
+
+ORIGINAL AVERAGE BULLET LENGTH: {avg_bullet_length:.0f} characters
+
+**YOUR PRIMARY JOB:**
+Rework each bullet's wording and emphasis for this JD while keeping its length within ±15 characters of the original. This resume has two full pages to work with, so there is no need to shorten anything - and no reason to pad anything either.
+**LENGTH FLOOR:** a tailored bullet must never be more than 15 characters SHORTER than the original. If your rewrite comes out shorter, you have dropped a detail - put it back (every clause, metric, and named tool in the original must survive).
+
+**HOW TO TAILOR:**
+✅ GOOD: Swap in JD-relevant keywords and emphasis the candidate can truthfully claim
+✅ GOOD: Sharpen the verb and impact framing of what's already there
+✅ GOOD: Keep every metric and technology already named
+❌ BAD: Shortening a bullet to save space, or dropping a detail to do so
+❌ BAD: Padding a bullet with filler or inventing scope not in the original
+"""
+        examples_header = "**MULTI-PAGE RESUME - keep the original length, change the emphasis:**"
+        example1 = '✅ Good (114 chars): "Built 5+ mobile applications for enterprise IT teams, driving a 15% increase in user engagement and higher ratings"'
+        example2 = '✅ Good (106 chars): "Supported technical sales cycles across 10+ national accounts, aligning solutions to client business goals"'
+    elif is_compact:
         # Adaptive compression target based on original bullet length
         # Don't compress too aggressively - respect user's original content
         if avg_bullet_length >= 200:
@@ -204,13 +232,13 @@ TAILORING RULES
 =========================================
 
 1. **KEEP EXACT BULLET COUNT** - Same number of bullets per job/project as original
-2. {"**MATCH CHARACTER COUNTS** - Each tailored bullet should be within ±15 chars of original" if is_compact else "**EXPAND WITH TRUTHFUL DETAIL** - Add only detail already grounded in the original bullet or resume; never invent new specifics"}
-3. {"**SWAP, DON'T ADD** - Replace generic terms with JD-specific keywords" if is_compact else "**TAILOR, DON'T ADD** - Replace generic terms with JD-specific keywords the candidate can truthfully claim"}
+2. {"**MATCH CHARACTER COUNTS** - Each tailored bullet should be within ±15 chars of original" if (is_compact or is_multipage) else "**EXPAND WITH TRUTHFUL DETAIL** - Add only detail already grounded in the original bullet or resume; never invent new specifics"}
+3. {"**SWAP, DON'T ADD** - Replace generic terms with JD-specific keywords" if (is_compact or is_multipage) else "**TAILOR, DON'T ADD** - Replace generic terms with JD-specific keywords the candidate can truthfully claim"}
 4. **START WITH A STRONG ACTION VERB** - Never open with "Responsible for", "Worked on", "Helped with", or a gerund ("Managing...", "Leading...") as the first word - lead with a specific past-tense action verb
 5. **VARY YOUR OPENING VERBS** - Do not start two bullets on the same resume with the same verb; use a different one for each
 6. **WHAT, SO WHAT, HOW** - Convey the achievement (what you did), its impact (so what), and briefly how - don't just list a responsibility
 7. **QUANTIFY WHEN TRUE** - Include a real number, percentage, or scale already grounded in the original bullet or resume when available; never invent a metric that isn't already there
-8. {f"**2 LINES PREFERRED, 3 LINES MAX** - Target {target_range}" if is_compact else f"**2 LINES PREFERRED, 3 LINES MAX** - Target {SPARSE_BULLET_CHAR_TARGET[0]}-{SPARSE_BULLET_CHAR_TARGET[1]} characters; never exceed {SPARSE_BULLET_CHAR_CEILING} characters"}
+8. {f"**KEEP THE ORIGINAL LENGTH, 3 LINES MAX** - Never exceed {SPARSE_BULLET_CHAR_CEILING} characters" if is_multipage else f"**2 LINES PREFERRED, 3 LINES MAX** - Target {target_range}" if is_compact else f"**2 LINES PREFERRED, 3 LINES MAX** - Target {SPARSE_BULLET_CHAR_TARGET[0]}-{SPARSE_BULLET_CHAR_TARGET[1]} characters; never exceed {SPARSE_BULLET_CHAR_CEILING} characters"}
 9. **PRESERVE STRUCTURE** - Do NOT change job titles, companies, dates, or locations. Do NOT add, remove, or rewrite the headline or summary - leave them exactly as given (including leaving them absent if the resume doesn't have one)
 10. **KEEP METRICS** - Preserve all numbers and percentages from original bullets
 11. **STAY TRUTHFUL** - Only use skills from the resume's skills list
