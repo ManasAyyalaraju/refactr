@@ -53,4 +53,9 @@ Single LaTeX template (`backend/templates/resume_template.tex`) with a togglable
 - Backend: `cd backend && venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000 --reload`. Port 8000 is hardcoded in `frontend/.env.local` and `extension/src/lib/config.ts` — don't let it float to another port.
 - Frontend: `cd frontend && npm run dev` (port 3000).
 - Extension: `cd extension && npm run build`, then load `extension/dist` unpacked in `chrome://extensions`.
+
+## Extension: two builds (local vs. production)
+
+- **Local dev** — `npm run build` (or `watch`) writes `extension/dist` (gitignored) with localhost URLs and a "(Local Dev)" name. Load that unpacked. Always leave local `dist` on this build.
+- **Production** — the `extension-release` branch, served by the `/extension` page's download link. It does **not** auto-update from `master`. After any change to `extension/src/` or `extension/manifest.json`: run `npm run build:prod` (production URLs, plain "refactr" name — never plain `build`), copy the changed files from `dist/` into a temporary `git worktree` of `extension-release`, commit and push, remove the worktree, then rebuild with plain `npm run build`. See `memory.md`.
 - Env vars: `frontend/.env.local` and `backend/.env` are gitignored; see the corresponding `.env.example` files for required keys (Supabase URL/anon key, OpenAI API key).
