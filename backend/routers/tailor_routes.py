@@ -254,6 +254,18 @@ async def tailor_resume_from_pdf(
 
         category_skills: List[str] = [item for cat in resume.technical_skills for item in cat.items]
 
+        # Baseline score for the resume as uploaded - before confirmed picker
+        # skills are merged in below and before tailoring - so the UI can
+        # show the before -> after jump. Literal matching only: skipping the
+        # semantic credit pass here saves an LLM call, at the cost of the
+        # baseline occasionally reading a little lower than a full score.
+        original_skills = _merge_and_dedupe_skills(resume.skills or [], line_skills, category_skills)
+        original_score = _compute_compatibility(
+            original_skills,
+            jd.model_dump(),
+            background_text=_resume_background_text(resume.model_copy(update={"skills": original_skills})),
+        )["score"]
+
         # Confirmed HARD skills (tools/languages/certifications) must be
         # merged in here, before categorize_skills below - not left to
         # tailor_resume()'s own merge, which runs after categorization and
@@ -352,6 +364,8 @@ async def tailor_resume_from_pdf(
                 compatibility = _compute_compatibility(
                     tailored_resume.skills or [], jd_data, credited, background_text=background_text
                 )
+
+        compatibility["original_score"] = original_score
 
         timings_header = json.dumps(timings)
 

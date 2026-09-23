@@ -20,7 +20,9 @@ type Screen =
 export interface PanelAppOptions {
   container: HTMLElement;
   jobContext: JobContext | null;
-  onClose?: () => void;
+  // Show a chevron that minimizes the panel to its header bar (on-page
+  // panel only - the toolbar popup has nothing to collapse into).
+  collapsible?: boolean;
 }
 
 interface State {
@@ -31,6 +33,11 @@ interface State {
   resumeFormat: 'regular' | 'technical';
   errorMessage: string;
   lastScore: number | null;
+  // Score of the resume before tailoring - the count-up starts here.
+  lastOriginalScore: number | null;
+  // Number currently shown on the done screen while counting up.
+  displayScore: number | null;
+  scoreAnimDone: boolean;
   lastResultId: string | null;
   pickerSkills: string[];
   selectedSkills: Set<string>;
@@ -38,6 +45,20 @@ interface State {
 
 const POLL_INTERVAL_MS = 1500;
 const POLL_TIMEOUT_MS = 3 * 60 * 1000;
+// Mirrors the web app's useCountUp in TailoredResultView.tsx.
+// Long hold: the download (and Chrome's download bubble or Save dialog)
+// lands at the same moment the done screen appears, so a short hold played
+// the whole count-up while the user was looking elsewhere.
+const COUNT_UP_DELAY_MS = 5000;
+// Paced per point so small and large jumps both read as a steady climb.
+const COUNT_UP_MS_PER_POINT = 90;
+const COUNT_UP_MIN_MS = 1500;
+const COUNT_UP_MAX_MS = 3200;
+
+// Gentle start and finish - no burst of skipped numbers at the beginning.
+function easeInOutSine(t: number): number {
+  return -(Math.cos(Math.PI * t) - 1) / 2;
+}
 
 function sanitizeFilenamePart(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, '').trim();
@@ -56,9 +77,14 @@ function buildTailoredResumeFilename(job: JobContext | null): string {
   return `${[...parts, 'Resume'].join(' - ')}.pdf`;
 }
 
-export function mountPanelApp({ container, jobContext, onClose }: PanelAppOptions): void {
+export function mountPanelApp({ container, jobContext, collapsible }: PanelAppOptions): void {
   const supabase = getSupabaseClient();
   let pollHandle: ReturnType<typeof setInterval> | null = null;
+  let countUpTimer: ReturnType<typeof setTimeout> | null = null;
+  let countUpFrame = 0;
+  // Kept outside State: purely presentational, and it must survive the
+  // screen changes that reset the rest of the flow.
+  let collapsed = false;
 
   const state: State = {
     screen: 'loading',
@@ -68,6 +94,9 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     resumeFormat: 'regular',
     errorMessage: '',
     lastScore: null,
+    lastOriginalScore: null,
+    displayScore: null,
+    scoreAnimDone: true,
     lastResultId: null,
     pickerSkills: [],
     selectedSkills: new Set(),
@@ -75,12 +104,78 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
 
   function render() {
     container.innerHTML = `
-      <div class="refactr-panel">
+      <div class="refactr-panel${collapsed ? ' refactr-panel-collapsed' : ''}">
         ${renderHeader()}
-        <div class="refactr-body">${renderBody()}</div>
+        ${collapsed ? '' : `<div class="refactr-body">${renderBody()}</div>`}
       </div>
     `;
     bindEvents();
+  }
+
+  function scoreImprovement(): number {
+    if (state.lastScore === null || state.lastOriginalScore === null) return 0;
+    return Math.max(0, state.lastScore - state.lastOriginalScore);
+  }
+
+  function renderScore(finalScore: number): string {
+    const improvement = scoreImprovement();
+    const delta = improvement
+      ? `<span class="refactr-score-delta${state.scoreAnimDone ? ' refactr-score-delta-visible' : ''}" data-role="score-delta">&uarr;${improvement}</span>`
+      : '';
+    // The delta hangs off the number's right edge (absolutely positioned) so
+    // the number itself stays centered over the label.
+    return `
+      <div class="refactr-score">
+        <span class="refactr-score-number"><strong data-role="score-value">${state.displayScore ?? finalScore}</strong>${delta}</span>
+        <div class="refactr-score-label">match score</div>
+      </div>
+    `;
+  }
+
+  function stopScoreCountUp() {
+    if (countUpTimer) clearTimeout(countUpTimer);
+    cancelAnimationFrame(countUpFrame);
+    countUpTimer = null;
+  }
+
+  // Shows the pre-tailoring score, then counts up to the tailored one and
+  // reveals the (↑N) delta. Writes straight to the DOM each frame instead of
+  // calling render(), which would rebuild the whole panel 60 times a second.
+  function startScoreCountUp() {
+    stopScoreCountUp();
+    const to = state.lastScore;
+    const from = state.lastOriginalScore;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (to === null || from === null || from >= to || reduceMotion) {
+      state.displayScore = to;
+      state.scoreAnimDone = true;
+      return;
+    }
+
+    state.displayScore = from;
+    state.scoreAnimDone = false;
+    const duration = Math.min(COUNT_UP_MAX_MS, Math.max(COUNT_UP_MIN_MS, (to - from) * COUNT_UP_MS_PER_POINT));
+    let start: number | null = null;
+    const tick = (now: number) => {
+      if (start === null) start = now;
+      const t = Math.min(1, (now - start) / duration);
+      const next = Math.round(from + (to - from) * easeInOutSine(t));
+      // Only touch the DOM when the visible number actually changes.
+      if (next !== state.displayScore) {
+        state.displayScore = next;
+        const valueEl = container.querySelector('[data-role="score-value"]');
+        if (valueEl) valueEl.textContent = String(next);
+      }
+      if (t < 1) {
+        countUpFrame = requestAnimationFrame(tick);
+      } else {
+        state.scoreAnimDone = true;
+        container.querySelector('[data-role="score-delta"]')?.classList.add('refactr-score-delta-visible');
+      }
+    };
+    countUpTimer = setTimeout(() => {
+      countUpFrame = requestAnimationFrame(tick);
+    }, COUNT_UP_DELAY_MS);
   }
 
   function renderHeader(): string {
@@ -88,7 +183,13 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       <div class="refactr-header">
         <div class="refactr-logo"><span></span><span></span></div>
         <div class="refactr-brand">refactr</div>
-        ${onClose ? '<button type="button" class="refactr-close" data-action="close">&times;</button>' : ''}
+        ${
+          collapsible
+            ? `<button type="button" class="refactr-collapse" data-action="toggle-collapse" aria-label="${collapsed ? 'Expand' : 'Minimize'} refactr" aria-expanded="${!collapsed}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="${collapsed ? '6 15 12 9 18 15' : '6 9 12 15 18 9'}"></polyline></svg>
+              </button>`
+            : ''
+        }
       </div>
     `;
   }
@@ -120,9 +221,7 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
           <div class="refactr-status">
             <p>&#10003; Tailored resume downloaded.</p>
             ${
-              state.lastScore !== null
-                ? `<p class="refactr-score"><strong>${state.lastScore}</strong> match score</p>`
-                : ''
+              state.lastScore !== null ? renderScore(state.lastScore) : ''
             }
             <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
               ${
@@ -236,9 +335,13 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
   }
 
   function bindEvents() {
-    container.querySelector('[data-action="close"]')?.addEventListener('click', () => {
-      stopPolling();
-      onClose?.();
+    // When collapsed, the whole header bar expands it - a bigger target than
+    // the chevron alone. Login polling and the score count-up keep running
+    // in the background; re-rendering picks their state back up.
+    const toggleTarget = collapsed ? '.refactr-header' : '[data-action="toggle-collapse"]';
+    container.querySelector(toggleTarget)?.addEventListener('click', () => {
+      collapsed = !collapsed;
+      render();
     });
     container.querySelector('[data-action="login"]')?.addEventListener('click', handleLoginClick);
     container.querySelector('[data-action="cancel-login"]')?.addEventListener('click', () => {
@@ -248,7 +351,10 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
     });
     container.querySelector('[data-action="tailor"]')?.addEventListener('click', handleTailor);
     container.querySelector('[data-action="reset"]')?.addEventListener('click', () => {
+      stopScoreCountUp();
       state.lastScore = null;
+      state.lastOriginalScore = null;
+      state.displayScore = null;
       state.lastResultId = null;
       state.pickerSkills = [];
       state.selectedSkills = new Set();
@@ -525,8 +631,10 @@ export function mountPanelApp({ container, jobContext, onClose }: PanelAppOption
       });
 
       state.lastScore = tailorResult.compatibility?.score ?? null;
+      state.lastOriginalScore = tailorResult.compatibility?.original_score ?? null;
       state.lastResultId = saved?.id ?? null;
       state.screen = 'done';
+      startScoreCountUp();
       render();
     } catch (err) {
       state.errorMessage = err instanceof Error ? err.message : 'Something went wrong.';

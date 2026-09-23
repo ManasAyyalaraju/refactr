@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download, FileText, CheckCircle2, AlertTriangle, Plus, type LucideIcon, RefreshCw } from 'lucide-react';
 import type { CompatibilityReport, JobDescription } from '@/types/resume';
 import PdfPreview from './PdfPreview';
@@ -36,6 +36,96 @@ function scoreTheme(score: number) {
   if (score >= 80) return { ring: '#1e9e5a', label: 'Strong Match' };
   if (score >= 60) return { ring: '#d97706', label: 'Solid Alignment' };
   return { ring: '#dc2626', label: 'Needs Attention' };
+}
+
+const COUNT_UP_DELAY_MS = 700;
+// Paced per point so small and large jumps both read as a steady climb.
+const COUNT_UP_MS_PER_POINT = 90;
+const COUNT_UP_MIN_MS = 1500;
+const COUNT_UP_MAX_MS = 3200;
+
+function countUpDuration(from: number, to: number): number {
+  return Math.min(COUNT_UP_MAX_MS, Math.max(COUNT_UP_MIN_MS, Math.abs(to - from) * COUNT_UP_MS_PER_POINT));
+}
+
+// Gentle start and finish - no burst of skipped numbers at the beginning.
+function easeInOutSine(t: number): number {
+  return -(Math.cos(Math.PI * t) - 1) / 2;
+}
+
+// Holds on `from` briefly so the pre-tailoring score registers, then eases
+// up to `to`. Returns the unrounded value (for a smooth ring sweep) and
+// whether it has finished.
+function useCountUp(from: number, to: number): { value: number; done: boolean } {
+  // Animation progress, 0 -> 1. Only ever set from timer/frame callbacks.
+  const [progress, setProgress] = useState(0);
+  const animate = from !== to;
+
+  useEffect(() => {
+    if (!animate) return;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const duration = countUpDuration(from, to);
+    let frame = 0;
+    let start: number | null = null;
+    const tick = (now: number) => {
+      if (start === null) start = now;
+      const t = Math.min(1, (now - start) / duration);
+      setProgress(t);
+      if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    const timer = setTimeout(
+      () => {
+        if (reduceMotion) setProgress(1);
+        else frame = requestAnimationFrame(tick);
+      },
+      reduceMotion ? 0 : COUNT_UP_DELAY_MS
+    );
+
+    return () => {
+      clearTimeout(timer);
+      cancelAnimationFrame(frame);
+    };
+  }, [animate, from, to]);
+
+  if (!animate) return { value: to, done: true };
+  return { value: from + (to - from) * easeInOutSine(progress), done: progress >= 1 };
+}
+
+// Split out so the per-frame count-up only re-renders the ring, not the
+// whole results view (PDF preview included) - that re-render was the stutter.
+function ScoreRing({ score, originalScore }: { score: number; originalScore?: number }) {
+  // Only animate a genuine improvement - equal or lower just shows the final score.
+  const improvement = originalScore !== undefined && score > originalScore ? score - originalScore : 0;
+  const { value, done } = useCountUp(improvement ? originalScore! : score, score);
+  const scoreAngle = `${(value / 100) * 360}deg`;
+  const ringColor = scoreTheme(Math.round(value)).ring;
+
+  return (
+    <div className="relative w-24 h-24 flex-shrink-0">
+      <div
+        className="absolute inset-0 rounded-full"
+        style={{
+          background: `conic-gradient(${ringColor} 0deg, ${ringColor} ${scoreAngle}, rgba(0,0,0,0.08) ${scoreAngle})`,
+        }}
+      />
+      <div className="absolute inset-2 rounded-full bg-[#fffcfc] border border-black/10 flex flex-col items-center justify-center text-center">
+        <span className="relative text-2xl font-bold text-black tabular-nums">
+          {Math.round(value)}
+          {improvement > 0 && (
+            <span
+              className={`absolute left-full top-0.5 ml-0.5 text-[11px] font-semibold text-[#1e9e5a] whitespace-nowrap transition-all duration-700 ease-out ${
+                done ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'
+              }`}
+              aria-label={`Up ${improvement} points from ${originalScore} before tailoring`}
+            >
+              &uarr;{improvement}
+            </span>
+          )}
+        </span>
+        <span className="text-[10px] text-black/40 uppercase tracking-wide">Score</span>
+      </div>
+    </div>
+  );
 }
 
 function MatchedChip({ skill }: { skill: string }) {
@@ -104,7 +194,6 @@ export default function TailoredResultView({
   };
 
   const score = compatibility?.score ?? 0;
-  const scoreAngle = `${(score / 100) * 360}deg`;
   const theme = scoreTheme(score);
 
   return (
@@ -121,18 +210,7 @@ export default function TailoredResultView({
         <div className="p-6 sm:p-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-8">
             <div className="flex items-center gap-6">
-              <div className="relative w-24 h-24 flex-shrink-0">
-                <div
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    background: `conic-gradient(${theme.ring} 0deg, ${theme.ring} ${scoreAngle}, rgba(0,0,0,0.08) ${scoreAngle})`,
-                  }}
-                />
-                <div className="absolute inset-2 rounded-full bg-[#fffcfc] border border-black/10 flex flex-col items-center justify-center text-center">
-                  <span className="text-2xl font-bold text-black">{score}</span>
-                  <span className="text-[10px] text-black/40 uppercase tracking-wide">Score</span>
-                </div>
-              </div>
+              <ScoreRing score={score} originalScore={compatibility?.original_score} />
               <div>
                 <p className="text-[13px] font-semibold text-[#187fe7] mb-1">Compatibility Overview</p>
                 <h2 className="text-[22px] font-bold text-black mb-1">{theme.label}</h2>

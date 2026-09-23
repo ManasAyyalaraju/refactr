@@ -85,6 +85,9 @@ export interface CompatibilityReport {
   missing_must_have: string[];
   missing_nice_to_have: string[];
   resume_skill_hits: string[];
+  // Score of the resume as uploaded, before tailoring (literal matching
+  // only). Absent on results saved before this field existed.
+  original_score?: number;
 }
 
 export interface TailoredResult {

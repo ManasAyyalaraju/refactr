@@ -116,10 +116,7 @@ async function renderPrompt(jobContext: JobContext) {
     mountPanelApp({
       container: panelContainer,
       jobContext: freshJobContext,
-      onClose: () => {
-        dismissedForThisPage = true;
-        teardown();
-      },
+      collapsible: true,
     });
   });
 }
