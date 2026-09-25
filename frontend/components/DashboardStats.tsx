@@ -39,7 +39,7 @@ export default function DashboardStats({ rows, baseResumeCount, loading }: Dashb
               <p className="text-[11px] text-black/50 mt-1">Total Tailored</p>
             </div>
             <div className="border border-black/[0.19] rounded-lg p-3 text-center">
-              <p className="text-2xl font-bold text-black">{stats.avgScore ?? '—'}</p>
+              <p className="text-2xl font-bold text-black">{stats.avgScore !== null && stats.avgScore !== undefined ? `${stats.avgScore}%` : '—'}</p>
               <p className="text-[11px] text-black/50 mt-1">Avg Match Score</p>
             </div>
             <div className="border border-black/[0.19] rounded-lg p-3 text-center">
@@ -108,7 +108,7 @@ export default function DashboardStats({ rows, baseResumeCount, loading }: Dashb
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {item.score !== null && (
                       <span className="text-[11px] px-2 py-0.5 rounded-full bg-black/5 text-black/60">
-                        {item.score}
+                        {item.score}%
                       </span>
                     )}
                     <ChevronRight className="w-3.5 h-3.5 text-black/30" />

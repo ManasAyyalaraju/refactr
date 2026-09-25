@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Archivo_Black, Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/lib/supabase/auth-context";
 import "./globals.css";
 
@@ -11,6 +11,15 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// Display face for big numbers (the match-score ring) - heavy and wide,
+// which Arial can't do (it tops out at bold).
+const archivoBlack = Archivo_Black({
+  variable: "--font-archivo-black",
+  subsets: ["latin"],
+  // Archivo Black ships a single (already heavy) weight.
+  weight: "400",
 });
 
 export const metadata: Metadata = {
@@ -26,7 +35,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${archivoBlack.variable} antialiased`}
       >
         <AuthProvider>{children}</AuthProvider>
       </body>

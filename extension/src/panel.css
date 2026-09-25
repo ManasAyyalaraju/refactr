@@ -237,7 +237,7 @@
 }
 
 .refactr-score {
-  margin-top: 14px;
+  margin-top: 4px;
 }
 
 .refactr-score-number {
@@ -246,36 +246,161 @@
   line-height: 1;
 }
 
+/* Burst when the count-up lands - mirrors the web ScoreRing. Hidden until
+   .refactr-score-celebrate is added so re-renders don't replay it. */
+.refactr-score-glow,
+.refactr-score-particle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+  display: none;
+}
+
+.refactr-score-glow {
+  width: 150px;
+  height: 90px;
+  margin: -45px 0 0 -75px;
+  border-radius: 50%;
+  background: rgba(24, 127, 231, 0.22);
+  filter: blur(14px);
+}
+
+.refactr-score-particle {
+  border-radius: 50%;
+}
+
+.refactr-score-celebrate .refactr-score-glow {
+  display: block;
+  animation: refactr-score-glow 0.9s ease-out both;
+}
+
+.refactr-score-celebrate .refactr-score-particle {
+  display: block;
+  animation: refactr-score-particle 1s ease-out both;
+}
+
+@keyframes refactr-score-glow {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes refactr-score-particle {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translate(calc(var(--dx) * 0.55), calc(var(--dy) * 0.55)) scale(0.6);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) translate(var(--dx), var(--dy)) scale(1);
+  }
+}
+
+/* Keep the digits above the glow (which is absolutely positioned first). */
+.refactr-score-number strong,
+.refactr-score-percent {
+  position: relative;
+  z-index: 1;
+}
+
 .refactr-score-number strong {
-  font-size: 44px;
-  font-weight: 700;
+  font-size: 58px;
+  font-weight: 800;
   color: #187fe7;
   font-variant-numeric: tabular-nums;
 }
 
+.refactr-score-percent {
+  font-size: 29px;
+  margin-left: 3px;
+  font-weight: 800;
+  color: #187fe7;
+}
+
+/* Green "up N" pill - mirrors the web app's score ring badge. The tilt lives
+   on this wrapper because the pop animation on the pill animates transform. */
 .refactr-score-delta {
   position: absolute;
   left: 100%;
-  top: 2px;
-  margin-left: 6px;
-  white-space: nowrap;
-  font-size: 16px;
-  font-weight: 600;
-  color: #1e9e5a;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.7s ease-out, transform 0.7s ease-out;
-}
-
-.refactr-score-label {
-  margin-top: 6px;
-  font-size: 14px;
-  color: rgba(0, 0, 0, 0.55);
+  top: -12px;
+  margin-left: -2px;
+  transform: rotate(-8deg);
+  visibility: hidden;
 }
 
 .refactr-score-delta-visible {
-  opacity: 1;
-  transform: translateY(0);
+  visibility: visible;
+}
+
+.refactr-score-delta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #1e9e5a;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(30, 158, 90, 0.35);
+  transform-origin: bottom left;
+}
+
+.refactr-score-delta-visible .refactr-score-delta-pill {
+  animation: refactr-badge-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes refactr-badge-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .refactr-score-delta-visible .refactr-score-delta-pill {
+    animation: none;
+  }
+  .refactr-score-celebrate .refactr-score-glow,
+  .refactr-score-celebrate .refactr-score-particle {
+    display: none;
+  }
+}
+
+.refactr-done-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.refactr-done-actions .refactr-btn {
+  width: 80%;
+}
+
+.refactr-score-label {
+  margin-top: 8px;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.55);
 }
 
 .refactr-spinner {

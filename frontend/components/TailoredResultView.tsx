@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Download, FileText, CheckCircle2, AlertTriangle, Plus, type LucideIcon, RefreshCw } from 'lucide-react';
+import { Download, FileText, CheckCircle2, AlertTriangle, Plus, type LucideIcon, RefreshCw, ArrowUp } from 'lucide-react';
 import type { CompatibilityReport, JobDescription } from '@/types/resume';
 import PdfPreview from './PdfPreview';
 
@@ -91,39 +91,115 @@ function useCountUp(from: number, to: number): { value: number; done: boolean } 
   return { value: from + (to - from) * easeInOutSine(progress), done: progress >= 1 };
 }
 
+const RING_SIZE = 132;
+const RING_STROKE = 10;
+const RING_RADIUS = (RING_SIZE - RING_STROKE) / 2;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+// Burst of dots around the ring when the count-up lands - alternating the
+// app blue and the improvement green, at slightly varied distances so it
+// doesn't read as a perfect circle.
+const PARTICLES = Array.from({ length: 16 }, (_, i) => {
+  const angle = (i / 16) * Math.PI * 2 + (i % 2 ? 0.12 : -0.08);
+  const distance = RING_SIZE / 2 + 26 + (i % 3) * 9;
+  return {
+    dx: Math.cos(angle) * distance,
+    dy: Math.sin(angle) * distance,
+    size: i % 3 === 0 ? 5 : 4,
+    color: i % 3 === 1 ? '#1e9e5a' : '#187fe7',
+    delay: (i % 4) * 40,
+  };
+});
+
 // Split out so the per-frame count-up only re-renders the ring, not the
 // whole results view (PDF preview included) - that re-render was the stutter.
 function ScoreRing({ score, originalScore }: { score: number; originalScore?: number }) {
   // Only animate a genuine improvement - equal or lower just shows the final score.
   const improvement = originalScore !== undefined && score > originalScore ? score - originalScore : 0;
   const { value, done } = useCountUp(improvement ? originalScore! : score, score);
-  const scoreAngle = `${(value / 100) * 360}deg`;
-  const ringColor = scoreTheme(Math.round(value)).ring;
+  const dashOffset = RING_CIRCUMFERENCE * (1 - Math.min(100, Math.max(0, value)) / 100);
+  const celebrate = improvement > 0 && done;
 
   return (
-    <div className="relative w-24 h-24 flex-shrink-0">
-      <div
-        className="absolute inset-0 rounded-full"
-        style={{
-          background: `conic-gradient(${ringColor} 0deg, ${ringColor} ${scoreAngle}, rgba(0,0,0,0.08) ${scoreAngle})`,
-        }}
-      />
-      <div className="absolute inset-2 rounded-full bg-[#fffcfc] border border-black/10 flex flex-col items-center justify-center text-center">
-        <span className="relative text-2xl font-bold text-black tabular-nums">
-          {Math.round(value)}
-          {improvement > 0 && (
+    <div
+      className={`relative flex-shrink-0 animate-score-ring-in ${improvement > 0 ? 'mr-12' : ''}`}
+      style={{ width: RING_SIZE, height: RING_SIZE }}
+    >
+      {celebrate && (
+        <>
+          <div className="absolute -inset-1 rounded-full border-[10px] border-[#187fe7]/30 blur-[6px] pointer-events-none animate-score-ring-glow" />
+          {PARTICLES.map((p, i) => (
             <span
-              className={`absolute left-full top-0.5 ml-0.5 text-[11px] font-semibold text-[#1e9e5a] whitespace-nowrap transition-all duration-700 ease-out ${
-                done ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'
-              }`}
-              aria-label={`Up ${improvement} points from ${originalScore} before tailoring`}
-            >
-              &uarr;{improvement}
-            </span>
-          )}
+              key={i}
+              className="absolute left-1/2 top-1/2 rounded-full pointer-events-none animate-score-particle"
+              style={
+                {
+                  width: p.size,
+                  height: p.size,
+                  background: p.color,
+                  animationDelay: `${p.delay}ms`,
+                  '--dx': `${p.dx}px`,
+                  '--dy': `${p.dy}px`,
+                } as React.CSSProperties
+              }
+            />
+          ))}
+        </>
+      )}
+
+      <svg width={RING_SIZE} height={RING_SIZE} viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} className="-rotate-90">
+        <defs>
+          <linearGradient id="score-ring-gradient" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#4a9ff0" />
+            <stop offset="100%" stopColor="#187fe7" />
+          </linearGradient>
+        </defs>
+        <circle
+          cx={RING_SIZE / 2}
+          cy={RING_SIZE / 2}
+          r={RING_RADIUS}
+          fill="none"
+          stroke="#187fe7"
+          strokeOpacity={0.1}
+          strokeWidth={RING_STROKE}
+        />
+        <circle
+          cx={RING_SIZE / 2}
+          cy={RING_SIZE / 2}
+          r={RING_RADIUS}
+          fill="none"
+          stroke="url(#score-ring-gradient)"
+          strokeWidth={RING_STROKE}
+          strokeLinecap="round"
+          strokeDasharray={RING_CIRCUMFERENCE}
+          strokeDashoffset={dashOffset}
+        />
+      </svg>
+
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span
+          className={`${
+            Math.round(value) >= 100 ? 'text-[36px]' : 'text-[42px]'
+          } leading-none font-(family-name:--font-archivo-black) font-normal text-[#187fe7] tabular-nums`}
+        >
+          {Math.round(value)}
+          <span className="text-[0.5em] ml-[0.08em]">%</span>
         </span>
-        <span className="text-[10px] text-black/40 uppercase tracking-wide">Score</span>
       </div>
+
+      {celebrate && (
+        // Tilt lives on this wrapper: the pop animation on the pill animates
+        // `transform` itself and would override a rotate on the same element.
+        <span className="absolute -top-3 -right-10 -rotate-[8deg]">
+          <span
+            className="inline-flex items-center gap-0.5 px-2.5 py-1 rounded-full bg-[#1e9e5a] text-white text-[13px] font-bold shadow-[0_2px_8px_rgba(30,158,90,0.35)] origin-bottom-left animate-score-badge-pop"
+            aria-label={`Up ${improvement} points from ${originalScore} before tailoring`}
+          >
+            <ArrowUp className="w-3.5 h-3.5" strokeWidth={3} />
+            {improvement}
+          </span>
+        </span>
+      )}
     </div>
   );
 }
@@ -209,12 +285,12 @@ export default function TailoredResultView({
       <div className="bg-[#fffcfc] border border-black rounded">
         <div className="p-6 sm:p-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-8">
-            <div className="flex items-center gap-6">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-6 sm:gap-8">
               <ScoreRing score={score} originalScore={compatibility?.original_score} />
               <div>
-                <p className="text-[13px] font-semibold text-[#187fe7] mb-1">Compatibility Overview</p>
-                <h2 className="text-[22px] font-bold text-black mb-1">{theme.label}</h2>
-                <p className="text-black/50 text-[14px]">
+                <p className="text-[13px] font-semibold text-[#187fe7] uppercase tracking-wide mb-2">Compatibility Overview</p>
+                <h2 className="text-[30px] leading-tight font-bold text-black mb-2">{theme.label}</h2>
+                <p className="text-black/50 text-[15px]">
                   {compatibility?.matched_must_have.length ?? 0} / {jdMust.length} required skills matched ·{' '}
                   {compatibility?.matched_nice_to_have.length ?? 0} / {jdNice.length} nice-to-haves matched
                 </p>
@@ -232,23 +308,17 @@ export default function TailoredResultView({
             </div>
           </div>
 
-          <div className="mt-6 grid sm:grid-cols-3 gap-3">
-            <div className="border border-black/[0.15] rounded-lg p-4 bg-black/[0.02]">
-              <p className="text-[12px] font-semibold text-black/50 mb-1">Must-have coverage</p>
-              <p className="text-2xl font-bold text-black">
-                {Math.round((compatibility?.must_coverage || 0) * 100)}%
-              </p>
-            </div>
-            <div className="border border-black/[0.15] rounded-lg p-4 bg-black/[0.02]">
-              <p className="text-[12px] font-semibold text-black/50 mb-1">Nice-to-have coverage</p>
-              <p className="text-2xl font-bold text-black">
-                {Math.round((compatibility?.nice_coverage || 0) * 100)}%
-              </p>
-            </div>
-            <div className="border border-black/[0.15] rounded-lg p-4 bg-black/[0.02]">
-              <p className="text-[12px] font-semibold text-black/50 mb-1">Resume skills listed</p>
-              <p className="text-2xl font-bold text-black">{resumeSkills.length}</p>
-            </div>
+          <div className="mt-8 grid sm:grid-cols-3 gap-4">
+            {[
+              { label: 'Must-have coverage', value: `${Math.round((compatibility?.must_coverage || 0) * 100)}%` },
+              { label: 'Nice-to-have coverage', value: `${Math.round((compatibility?.nice_coverage || 0) * 100)}%` },
+              { label: 'Resume skills listed', value: resumeSkills.length },
+            ].map((stat) => (
+              <div key={stat.label} className="border border-black/[0.15] rounded-lg px-5 py-4 bg-black/[0.02]">
+                <p className="text-[13px] font-semibold text-black/50 mb-1.5">{stat.label}</p>
+                <p className="text-[22px] leading-tight font-semibold text-black">{stat.value}</p>
+              </div>
+            ))}
           </div>
         </div>
       </div>

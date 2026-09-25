@@ -18,7 +18,7 @@ function scoreChip(score: number | null | undefined) {
     score >= 80 ? 'bg-green-50 text-green-700 border-green-200' :
     score >= 60 ? 'bg-amber-50 text-amber-700 border-amber-200' :
     'bg-red-50 text-red-700 border-red-200';
-  return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${color}`}>{score}</span>;
+  return <span className={`text-xs px-2.5 py-1 rounded-full border font-medium ${color}`}>{score}%</span>;
 }
 
 export default function TailoredHistoryPage() {
