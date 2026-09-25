@@ -20484,10 +20484,21 @@ ${suffix}`;
   // src/panel-app.ts
   var POLL_INTERVAL_MS = 1500;
   var POLL_TIMEOUT_MS = 3 * 60 * 1e3;
-  var COUNT_UP_DELAY_MS = 5e3;
+  var COUNT_UP_DELAY_MS = 2500;
   var COUNT_UP_MS_PER_POINT = 90;
   var COUNT_UP_MIN_MS = 1500;
   var COUNT_UP_MAX_MS = 3200;
+  var BURST_PARTICLES = Array.from({ length: 16 }, (_, i) => {
+    const angle = i / 16 * Math.PI * 2 + (i % 2 ? 0.12 : -0.08);
+    const spread = 1 + i % 3 * 0.14;
+    return {
+      dx: Math.round(Math.cos(angle) * 78 * spread),
+      dy: Math.round(Math.sin(angle) * 46 * spread),
+      size: i % 3 === 0 ? 5 : 4,
+      color: i % 3 === 1 ? "#1e9e5a" : "#187fe7",
+      delay: i % 4 * 40
+    };
+  });
   function easeInOutSine(t) {
     return -(Math.cos(Math.PI * t) - 1) / 2;
   }
@@ -20535,10 +20546,17 @@ ${suffix}`;
     }
     function renderScore(finalScore) {
       const improvement = scoreImprovement();
-      const delta = improvement ? `<span class="refactr-score-delta${state.scoreAnimDone ? " refactr-score-delta-visible" : ""}" data-role="score-delta">&uarr;${improvement}</span>` : "";
+      const delta = improvement ? `<span class="refactr-score-delta${state.scoreAnimDone ? " refactr-score-delta-visible" : ""}" data-role="score-delta">
+          <span class="refactr-score-delta-pill" aria-label="Up ${improvement} points before tailoring">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>${improvement}
+          </span>
+        </span>` : "";
+      const burst = improvement ? `<span class="refactr-score-glow" aria-hidden="true"></span>${BURST_PARTICLES.map(
+        (p) => `<span class="refactr-score-particle" aria-hidden="true" style="width:${p.size}px;height:${p.size}px;background:${p.color};animation-delay:${p.delay}ms;--dx:${p.dx}px;--dy:${p.dy}px;"></span>`
+      ).join("")}` : "";
       return `
-      <div class="refactr-score">
-        <span class="refactr-score-number"><strong data-role="score-value">${state.displayScore ?? finalScore}</strong>${delta}</span>
+      <div class="refactr-score" data-role="score">
+        <span class="refactr-score-number">${burst}<strong data-role="score-value">${state.displayScore ?? finalScore}</strong><span class="refactr-score-percent">%</span>${delta}</span>
         <div class="refactr-score-label">match score</div>
       </div>
     `;
@@ -20575,6 +20593,7 @@ ${suffix}`;
           countUpFrame = requestAnimationFrame(tick);
         } else {
           state.scoreAnimDone = true;
+          container.querySelector('[data-role="score"]')?.classList.add("refactr-score-celebrate");
           container.querySelector('[data-role="score-delta"]')?.classList.add("refactr-score-delta-visible");
         }
       };
@@ -20618,9 +20637,8 @@ ${suffix}`;
         case "done":
           return `
           <div class="refactr-status">
-            <p>&#10003; Tailored resume downloaded.</p>
             ${state.lastScore !== null ? renderScore(state.lastScore) : ""}
-            <div style="display:flex; flex-direction:column; gap:10px; margin-top:14px;">
+            <div class="refactr-done-actions">
               ${state.lastResultId ? `<button type="button" class="refactr-btn" data-action="view-details">View Detailed Results</button>` : ""}
               <button type="button" class="refactr-btn refactr-btn-secondary" data-action="reset">Tailor another</button>
             </div>
