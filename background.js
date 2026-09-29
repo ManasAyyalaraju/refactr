@@ -20209,6 +20209,7 @@ ${suffix}`;
   var SUPABASE_URL = "https://ajchqijmzaxdphlaadeh.supabase.co";
   var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFqY2hxaWptemF4ZHBobGFhZGVoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3MTY4MjIsImV4cCI6MjA5MjI5MjgyMn0.0sxDJH1hftzOlsupmmQBmu3DWdWUhSaxvQM9UtdvTAQ";
   var API_BASE_URL = "https://api.refactrapp.com";
+  var WEB_APP_URL = "https://www.refactrapp.com";
 
   // src/lib/supabase-client.ts
   var chromeStorageAdapter = {
@@ -20347,7 +20348,8 @@ ${suffix}`;
     }
     return false;
   });
-  chrome.runtime.onMessageExternal.addListener((message, _sender, sendResponse) => {
+  chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+    if (sender.origin !== new URL(WEB_APP_URL).origin) return false;
     if (message.type !== "REFACTR_AUTH_HANDOFF") return false;
     const supabase = getSupabaseClient();
     supabase.auth.setSession({ access_token: message.access_token, refresh_token: message.refresh_token }).then(({ error }) => sendResponse({ ok: !error, error: error?.message })).catch((err) => sendResponse({ ok: false, error: err instanceof Error ? err.message : "Unknown error" }));

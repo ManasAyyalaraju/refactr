@@ -5,9 +5,20 @@
   "description": "Automatically tailor your resume for the job posting you're viewing.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsOU7fWrO79+IktaDdIS65O7vMX/Lc1N5HHThBkXWaOLWsuTvTQIIGSwzdxyYkYajeOpBngRpIQI/9jLXYSYlpB2rEIrd/A3EcL85SA/LHRi6RxeT5jZ+lRrVvEAGUIIyyCD2DB1GplFpGgP4y62yXNKnI829pjSHzf9X1I+jwfWKbvRl6MUm5cUODV+NE30YnXZwy6PaVQW+ZJaCKU0tbSm+5A43DfGbY3AG3oSEDykuDgd1isDaldjjQycIApwe5qRhvKE0/z7SbuKfwNvOroNGBc4+HRbn1du1TRV2gFWXwJ8G6X1DcVOHLf56jd5rCsVEdeMBPZrnmqHwoN5oaQIDAQAB",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
     "default_title": "refactr",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
@@ -43,7 +54,6 @@
   ],
   "externally_connectable": {
     "matches": [
-      "http://localhost:3000/*",
       "https://www.refactrapp.com/*"
     ]
   },
@@ -59,7 +69,6 @@
     "https://*.glassdoor.com/*",
     "https://joinhandshake.com/*",
     "https://*.joinhandshake.com/*",
-    "http://localhost:8000/*",
     "https://api.refactrapp.com/*"
   ]
 }
