@@ -58,4 +58,5 @@ Single LaTeX template (`backend/templates/resume_template.tex`) with a togglable
 
 - **Local dev** — `npm run build` (or `watch`) writes `extension/dist` (gitignored) with localhost URLs and a "(Local Dev)" name. Load that unpacked. Always leave local `dist` on this build.
 - **Production** — the `extension-release` branch, served by the `/extension` page's download link. It does **not** auto-update from `master`. After any change to `extension/src/` or `extension/manifest.json`: run `npm run build:prod` (production URLs, plain "refactr" name — never plain `build`), copy the changed files from `dist/` into a temporary `git worktree` of `extension-release`, commit and push, remove the worktree, then rebuild with plain `npm run build`. See `memory.md`.
+- **Chrome Web Store** — `npm run build:store` writes `extension/refactr-store.zip` (gitignored) for upload: the production build minus the manifest `key`, which the store rejects. Rebuild with plain `npm run build` afterward.
 - Env vars: `frontend/.env.local` and `backend/.env` are gitignored; see the corresponding `.env.example` files for required keys (Supabase URL/anon key, OpenAI API key).

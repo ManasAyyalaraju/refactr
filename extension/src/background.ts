@@ -1,6 +1,6 @@
 import { getSupabaseClient } from './lib/supabase-client';
 import { blobToDataUrl } from './lib/data-url';
-import { API_BASE_URL } from './lib/config';
+import { API_BASE_URL, WEB_APP_URL } from './lib/config';
 
 interface DownloadFileMessage {
   type: 'DOWNLOAD_FILE';
@@ -162,7 +162,10 @@ interface AuthHandoffMessage {
 
 // Received from the refactr web app (see externally_connectable in manifest.json)
 // after the user logs in there, so the extension picks up the same session.
-chrome.runtime.onMessageExternal.addListener((message: AuthHandoffMessage, _sender, sendResponse) => {
+// The origin check backs up externally_connectable: only this build's own web
+// app may hand over a session.
+chrome.runtime.onMessageExternal.addListener((message: AuthHandoffMessage, sender, sendResponse) => {
+  if (sender.origin !== new URL(WEB_APP_URL).origin) return false;
   if (message.type !== 'REFACTR_AUTH_HANDOFF') return false;
 
   const supabase = getSupabaseClient();

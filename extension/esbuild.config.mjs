@@ -47,8 +47,20 @@ mkdirSync(join(__dirname, 'dist'), { recursive: true });
 // a "(Local Dev)" label so the two are visually distinguishable in
 // chrome://extensions and the toolbar - the shipped prod build's identity
 // stays untouched, since real users only ever see that one.
+//
+// The prod build also drops the localhost origins, which only the dev build
+// talks to. The store build (`npm run build:store`, prod plus --store) also
+// drops "key": the Chrome Web Store rejects uploads that include it and pins
+// the ID itself, so manifest.json's key must be the store's public key for
+// the two IDs to match. extension-release keeps the key, since unpacked
+// installs need it to get the fixed ID.
 const manifest = JSON.parse(readFileSync(join(__dirname, 'manifest.json'), 'utf8'));
-if (!prod) {
+if (prod) {
+  const isLocal = (pattern) => pattern.startsWith('http://localhost');
+  if (process.argv.includes('--store')) delete manifest.key;
+  manifest.host_permissions = manifest.host_permissions.filter((p) => !isLocal(p));
+  manifest.externally_connectable.matches = manifest.externally_connectable.matches.filter((p) => !isLocal(p));
+} else {
   manifest.name = `${manifest.name} (Local Dev)`;
   manifest.version_name = `${manifest.version} (Local Dev)`;
 }

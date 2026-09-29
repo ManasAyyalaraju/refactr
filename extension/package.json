@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node esbuild.config.mjs",
     "build:prod": "node esbuild.config.mjs --prod",
+    "build:store": "node esbuild.config.mjs --prod --store && rm -f refactr-store.zip && cd dist && zip -qr ../refactr-store.zip . -x '*.map'",
     "watch": "node esbuild.config.mjs --watch"
   },
   "dependencies": {

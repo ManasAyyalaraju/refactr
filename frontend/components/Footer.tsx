@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { Copy, Github, Linkedin } from 'lucide-react';
 
 export default function Footer() {
@@ -15,6 +16,9 @@ export default function Footer() {
             <p className="text-[15px] text-black">
               Built by <span className="font-bold">Manas Ayyalaraju</span>
             </p>
+            <Link href="/privacy" className="text-[14px] text-black/60 hover:text-[#187fe7] transition-colors">
+              Privacy Policy
+            </Link>
           </div>
 
           <div className="flex items-center gap-2">
