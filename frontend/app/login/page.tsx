@@ -6,7 +6,7 @@ import Link from 'next/link';
 import ErrorMessage from '@/components/ErrorMessage';
 import AuthInput from '@/components/AuthInput';
 import AuthProductGraphic from '@/components/AuthProductGraphic';
-import GoogleIcon from '@/components/GoogleIcon';
+import GoogleSignInButton from '@/components/GoogleSignInButton';
 import { createClient } from '@/lib/supabase/client';
 
 function safeRedirectTarget(value: string | null): string {
@@ -53,18 +53,9 @@ function LoginForm() {
     router.refresh();
   };
 
-  const handleGoogleSignIn = async () => {
-    setError('');
-    const redirectTo = `${window.location.origin}/auth/callback${
-      redirectParam ? `?redirect=${encodeURIComponent(redirectParam)}` : ''
-    }`;
-    const { error: oauthError } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo },
-    });
-    if (oauthError) {
-      setError(oauthError.message);
-    }
+  const handleGoogleSignedIn = () => {
+    router.push(safeRedirectTarget(redirectParam));
+    router.refresh();
   };
 
   return (
@@ -126,14 +117,7 @@ function LoginForm() {
               <div className="flex-1 h-px bg-[#d9d9d9]" />
             </div>
 
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              className="w-full h-[54px] flex items-center justify-center gap-2 px-2 rounded-[10px] border-2 border-[#e6e8e7] bg-white font-semibold text-[18px] tracking-[-0.18px] text-[#232323] shadow-[0px_1px_1px_rgba(0,0,0,0.03)] hover:bg-gray-50 transition-colors cursor-pointer"
-            >
-              Continue with Google
-              <GoogleIcon className="w-6 h-6" />
-            </button>
+            <GoogleSignInButton redirectParam={redirectParam} onSignedIn={handleGoogleSignedIn} onError={setError} />
           </form>
 
           <p className="text-[18px] text-[#6c6c6c] text-center">
