@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Archivo_Black, Geist, Geist_Mono } from "next/font/google";
 import { AuthProvider } from "@/lib/supabase/auth-context";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -38,6 +39,7 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} ${archivoBlack.variable} antialiased`}
       >
         <AuthProvider>{children}</AuthProvider>
+        <Analytics />
       </body>
     </html>
   );
